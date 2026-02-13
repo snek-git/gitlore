@@ -1,0 +1,9 @@
+Examples:
+- "This will NPE if user is null" -> {"categories": ["bug"], "confidence": 0.95}
+- "Move this logic to the service layer, the controller shouldn't handle business rules" -> {"categories": ["architecture"], "confidence": 0.90}
+- "We always use camelCase for method names in this project" -> {"categories": ["convention"], "confidence": 0.92}
+- "This is vulnerable to SQL injection, use parameterized queries" -> {"categories": ["security", "bug"], "confidence": 0.95}
+- "This is O(n^2), use a Set for lookups instead" -> {"categories": ["performance"], "confidence": 0.93}
+- "Typo: 'recieve' should be 'receive'" -> {"categories": ["nitpick"], "confidence": 0.97}
+- "Why did you choose Redis over Memcached here?" -> {"categories": ["question"], "confidence": 0.88}
+- "LGTM, nice refactor!" -> {"categories": ["praise"], "confidence": 0.98}

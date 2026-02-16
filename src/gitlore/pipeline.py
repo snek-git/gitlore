@@ -9,7 +9,9 @@ from gitlore.config import GitloreConfig
 from gitlore.models import AnalysisResult, SynthesisResult
 
 
-def run_pipeline(config: GitloreConfig, *, git_only: bool = False, use_cache: bool = True) -> SynthesisResult:
+def run_pipeline(
+    config: GitloreConfig, *, git_only: bool = False, use_cache: bool = True, console: object | None = None,
+) -> SynthesisResult:
     """Run the full gitlore analysis pipeline."""
     from gitlore.analyzers.churn import analyze_churn
     from gitlore.analyzers.commit_classifier import classify_commits
@@ -20,7 +22,12 @@ def run_pipeline(config: GitloreConfig, *, git_only: bool = False, use_cache: bo
     from gitlore.extractors.git_log import iter_commits
     from gitlore.synthesis.synthesizer import synthesize
 
+    def _log(msg: str) -> None:
+        if console is not None and hasattr(console, "print"):
+            console.print(f"[dim]{msg}[/dim]")
+
     # ── Branch A: Git extraction + analysis ─────────────────────────────
+    _log("Extracting git history...")
     commits = list(
         iter_commits(
             config.repo_path,
@@ -28,6 +35,7 @@ def run_pipeline(config: GitloreConfig, *, git_only: bool = False, use_cache: bo
             no_merges=True,
         )
     )
+    _log(f"Analyzing {len(commits)} commits...")
 
     classified = classify_commits(commits)
     conventions = analyze_conventions(classified)
@@ -50,45 +58,55 @@ def run_pipeline(config: GitloreConfig, *, git_only: bool = False, use_cache: bo
 
     # ── Branch B: GitHub comments + LLM (optional) ──────────────────────
     if not git_only and config.github.owner and config.github.repo:
-        _run_comment_pipeline(config, analysis, use_cache=use_cache)
+        _run_comment_pipeline(config, analysis, use_cache=use_cache, _log=_log)
 
     # ── Synthesis ───────────────────────────────────────────────────────
+    _log("Synthesizing findings...")
     return synthesize(analysis, config)
 
 
-def _run_comment_pipeline(config: GitloreConfig, analysis: AnalysisResult, *, use_cache: bool = True) -> None:
+def _run_comment_pipeline(
+    config: GitloreConfig, analysis: AnalysisResult, *, use_cache: bool = True, _log: object = None,
+) -> None:
     """Fetch, classify, and cluster PR review comments."""
     import asyncio
+    from typing import Callable
 
     from gitlore.cache import Cache
     from gitlore.classifiers.comment_classifier import classify_comments
     from gitlore.clustering.semantic import cluster_comments
     from gitlore.extractors.github_comments import fetch_review_comments
 
+    log: Callable[[str], None] = _log if callable(_log) else lambda _: None
     cache = Cache(config.repo_path) if use_cache else None
 
     token = config.github.resolve_token()
     if not token:
+        log("No GitHub token found, skipping PR comments")
         return
 
     # Check cache for comments
     comments = None
     if cache is not None:
         comments = cache.get_comments(config.github.owner, config.github.repo)
+        if comments is not None:
+            log(f"Cache hit: {len(comments)} comments")
 
     if comments is None:
+        log("Fetching PR comments from GitHub...")
         comments = asyncio.run(
             fetch_review_comments(token, config.github.owner, config.github.repo)
         )
-        # Always write to cache even if use_cache was True (it already is if we're here)
         if cache is not None and comments:
             cache.set_comments(config.github.owner, config.github.repo, comments)
 
     if not comments:
         return
 
+    log(f"Classifying {len(comments)} comments...")
     classified = asyncio.run(classify_comments(comments, config.models.classifier, cache=cache))
     analysis.classified_comments = classified
+    log(f"Clustering {len(classified)} comments...")
     clusters = cluster_comments(classified, config.models, cache=cache)
     analysis.comment_clusters = clusters
 

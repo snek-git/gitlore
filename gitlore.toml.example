@@ -16,4 +16,4 @@ owner = "myorg"
 repo = "myproject"
 
 [output]
-formats = ["report"]
+formats = ["report", "html"]

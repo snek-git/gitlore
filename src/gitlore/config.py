@@ -55,7 +55,7 @@ class GitHubConfig:
 
 @dataclass
 class OutputConfig:
-    formats: list[str] = field(default_factory=lambda: ["report"])
+    formats: list[str] = field(default_factory=lambda: ["report", "html"])
 
 
 @dataclass
@@ -140,5 +140,5 @@ owner = ""
 repo = ""
 
 [output]
-formats = ["report"]
+formats = ["report", "html"]
 """

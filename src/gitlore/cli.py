@@ -11,7 +11,9 @@ from rich.console import Console
 
 from gitlore.config import DEFAULT_CONFIG_TEMPLATE, GitloreConfig
 
+# Load .env from CWD, then fall back to ~/.config/gitlore/.env
 load_dotenv()
+load_dotenv(Path.home() / ".config" / "gitlore" / ".env")
 
 app = typer.Typer(
     name="gitlore",
@@ -83,8 +85,7 @@ def analyze(
     if formats:
         config.output.formats = [f.strip() for f in formats.split(",")]
 
-    with console.status("[bold green]Analyzing repository..."):
-        result = run_pipeline(config, git_only=git_only, use_cache=not no_cache)
+    result = run_pipeline(config, git_only=git_only, use_cache=not no_cache, console=console)
 
     if dry_run:
         from gitlore.formatters.report import format_report

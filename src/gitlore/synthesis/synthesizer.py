@@ -526,6 +526,7 @@ async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object
             mcp_servers={"git": server},
             allowed_tools=_ALLOWED_TOOLS,
             permission_mode="bypassPermissions",
+            disallowed_tools=["Bash", "Write", "Edit", "NotebookEdit"],
             max_turns=50,
             cwd=repo_path,
             stderr=_capture_stderr,

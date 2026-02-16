@@ -1,8 +1,1 @@
-Classify the following PR review comment. A comment may belong to multiple categories.
-
-{few_shot}
-
-Now classify:
-"{comment}"
-
-Respond ONLY with JSON: {{"categories": [...], "confidence": <float>}}
+<comment>{comment}</comment>

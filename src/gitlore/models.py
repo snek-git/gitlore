@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 
-
 # ── Git extraction ──────────────────────────────────────────────────────────
 
 
@@ -248,25 +247,16 @@ class CommentCluster:
 # ── Synthesis output ────────────────────────────────────────────────────────
 
 
-class RuleCategory(Enum):
-    COUPLING = "coupling"
-    HOTSPOT = "hotspot"
-    REVIEW_PATTERN = "review_pattern"
-    CONVENTION = "convention"
-    TESTING = "testing"
+# ── Pipeline aggregates ─────────────────────────────────────────────────────
 
 
 @dataclass
-class Rule:
-    """A single generated rule for an AI coding assistant config."""
+class SynthesisSection:
+    """A section of synthesized knowledge report content."""
 
-    text: str
-    category: RuleCategory
-    confidence: float = 0.0
-    evidence_summary: str = ""
-
-
-# ── Pipeline aggregates ─────────────────────────────────────────────────────
+    id: str
+    title: str
+    content: str = ""
 
 
 @dataclass
@@ -281,6 +271,7 @@ class AnalysisResult:
     hub_files: list[HubFile] = field(default_factory=list)
     conventions: CommitConvention | None = None
     comment_clusters: list[CommentCluster] = field(default_factory=list)
+    classified_comments: list[ClassifiedComment] = field(default_factory=list)
     total_commits_analyzed: int = 0
     analysis_date: datetime | None = None
 
@@ -290,6 +281,8 @@ class SynthesisResult:
     """Output from the synthesis stage."""
 
     content: str = ""
+    sections: list[SynthesisSection] = field(default_factory=list)
     analysis: AnalysisResult | None = None
+    has_review_data: bool = False
     model_used: str = ""
     total_tokens: int = 0

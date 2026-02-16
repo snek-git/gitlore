@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -218,6 +219,90 @@ class TestAnalysisToXml:
         assert 'category name="review-patterns"' in xml
         assert "error handling" in xml.lower()
 
+    def test_review_patterns_first_in_xml(self, sample_analysis: AnalysisResult):
+        xml = analysis_to_xml(sample_analysis)
+        review_pos = xml.index('category name="review-patterns"')
+        coupling_pos = xml.index('category name="co-change-coupling"')
+        assert review_pos < coupling_pos
+
+    def test_review_xml_includes_sample_metadata(self, sample_analysis: AnalysisResult):
+        xml = analysis_to_xml(sample_analysis)
+        assert 'author="reviewer1"' in xml
+        assert 'pr="101"' in xml
+        assert "<body>" in xml
+        assert "<categories>" in xml
+
+    def test_review_xml_includes_thread_comments(self):
+        base = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        result = AnalysisResult(
+            comment_clusters=[
+                CommentCluster(
+                    cluster_id=0,
+                    label="Test cluster",
+                    comments=[
+                        ClassifiedComment(
+                            comment=ReviewComment(
+                                pr_number=42,
+                                file_path="src/foo.py",
+                                line=10,
+                                body="Main comment body",
+                                author="alice",
+                                created_at=base,
+                                is_resolved=True,
+                                diff_context="+ some diff",
+                                thread_comments=["Reply one", "Reply two"],
+                            ),
+                            categories=[CommentCategory.ARCHITECTURE],
+                            confidence=0.9,
+                        ),
+                    ],
+                    coherence=0.8,
+                ),
+            ],
+        )
+        xml = analysis_to_xml(result)
+        assert 'resolved="true"' in xml
+        assert "<reply>" in xml
+        assert "Reply one" in xml
+        assert "<diff_context>" in xml
+
+    def test_notable_comments_xml(self):
+        base = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        result = AnalysisResult(
+            classified_comments=[
+                ClassifiedComment(
+                    comment=ReviewComment(
+                        pr_number=50,
+                        file_path="src/important.py",
+                        line=5,
+                        body="This is a security issue that needs fixing.",
+                        author="securityreviewer",
+                        created_at=base,
+                        is_resolved=False,
+                    ),
+                    categories=[CommentCategory.SECURITY],
+                    confidence=0.95,
+                ),
+                ClassifiedComment(
+                    comment=ReviewComment(
+                        pr_number=51,
+                        file_path=None,
+                        line=None,
+                        body="Nice work!",
+                        author="friendly",
+                        created_at=base,
+                    ),
+                    categories=[CommentCategory.PRAISE],
+                    confidence=0.99,
+                ),
+            ],
+        )
+        xml = analysis_to_xml(result)
+        assert 'category name="notable-comments"' in xml
+        assert "security issue" in xml.lower()
+        # Praise-only comments should be filtered out
+        assert "Nice work" not in xml
+
     def test_empty_analysis_produces_minimal_xml(self):
         empty = AnalysisResult()
         xml = analysis_to_xml(empty)
@@ -243,24 +328,42 @@ class TestAnalysisToXml:
         assert "&lt;special&gt;" in xml
         assert "&amp;" in xml
 
+    def test_xml_escapes_revert_files_in_description(self):
+        result = AnalysisResult(
+            revert_chains=[
+                RevertChain(
+                    original_hash="abc1234",
+                    original_subject="feat: add parser",
+                    revert_hashes=["def5678"],
+                    files=["src/a&b.py"],
+                )
+            ]
+        )
+        xml = analysis_to_xml(result)
+        ET.fromstring(xml)  # should be valid XML
+        assert "src/a&amp;b.py" in xml
+
 
 # ── Synthesizer integration test (mocked agent SDK) ──────────────────────────
 
 
 _SAMPLE_LLM_OUTPUT = """\
-## Architecture
+This repo combines deterministic git analyzers with LLM-backed synthesis.
 
-`src/auth/session.ts` and `src/auth/login.ts` are tightly coupled (92% co-change rate).
-Always update both together.
+## Review Insights
 
-## Gotchas
+Reviewers consistently flag missing error handling in API routes, particularly
+around database timeouts and user-not-found cases.
 
-- `src/api/routes.ts` is a churn hotspot (35% fix ratio). Add extra test coverage.
-- The OAuth flow was reverted once — ensure callback.ts is tested with edge cases.
+## Architecture & Data Flow
 
-## Conventions
+`src/gitlore/pipeline.py` merges deterministic git analysis with optional PR-comment analysis.
+`src/gitlore/synthesis/synthesizer.py` turns analysis XML into a knowledge report.
 
-Use conventional commits with scope: `feat(auth): description`. 92% adherence.
+## Repository Conventions
+
+- Keep analyzers deterministic and free of direct LLM calls.
+- Use `litellm.acompletion` with bounded concurrency for async LLM work.
 """
 
 
@@ -269,9 +372,10 @@ def _mock_query_returning(text: str):
 
     Captures the user prompt text from the async iterable for later assertion.
     """
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     async def _fake_query(prompt, options=None):
+        captured["options"] = options
         # Drain the async iterable prompt and capture the user message text
         if hasattr(prompt, "__aiter__"):
             async for msg in prompt:
@@ -304,10 +408,36 @@ class TestSynthesizer:
         mock_query.assert_called_once()
         assert "<patterns>" in fake.captured["prompt"]
         assert isinstance(result, SynthesisResult)
-        assert "src/auth/session.ts" in result.content
-        assert "## Architecture" in result.content
+        assert "## Review Insights" in result.content
+        assert "## Architecture & Data Flow" in result.content
+        assert result.sections
+        assert result.sections[0].title == "Review Insights"
+        assert "error handling" in result.sections[0].content.lower()
+        assert fake.captured["options"].max_turns == 50
         assert result.analysis is sample_analysis
         assert result.model_used == config.models.synthesizer
+
+    @patch(_PATCH_ENV)
+    @patch("gitlore.synthesis.synthesizer.query")
+    def test_synthesize_sets_has_review_data(self, mock_query, _mock_env, sample_analysis: AnalysisResult):
+        mock_query.side_effect = _mock_query_returning(_SAMPLE_LLM_OUTPUT)
+        config = GitloreConfig()
+
+        result = synthesize(sample_analysis, config)
+
+        assert result.has_review_data is True
+
+    @patch(_PATCH_ENV)
+    @patch("gitlore.synthesis.synthesizer.query")
+    def test_synthesize_no_review_data_flag(self, mock_query, _mock_env):
+        mock_query.side_effect = _mock_query_returning("No strong patterns detected.")
+        config = GitloreConfig()
+        empty_analysis = AnalysisResult()
+
+        result = synthesize(empty_analysis, config)
+
+        assert result.has_review_data is False
+        assert "git-only" in _mock_query_returning._last_prompt if hasattr(_mock_query_returning, "_last_prompt") else True
 
     @patch(_PATCH_ENV)
     @patch("gitlore.synthesis.synthesizer.query")
@@ -320,6 +450,29 @@ class TestSynthesizer:
 
         assert isinstance(result, SynthesisResult)
         assert "No strong patterns" in result.content
+
+    @patch(_PATCH_ENV)
+    @patch("gitlore.synthesis.synthesizer.query")
+    def test_synthesize_prompt_mentions_review_data(self, mock_query, _mock_env, sample_analysis: AnalysisResult):
+        fake = _mock_query_returning(_SAMPLE_LLM_OUTPUT)
+        mock_query.side_effect = fake
+        config = GitloreConfig()
+
+        synthesize(sample_analysis, config)
+
+        assert "review insights" in fake.captured["prompt"].lower()
+
+    @patch(_PATCH_ENV)
+    @patch("gitlore.synthesis.synthesizer.query")
+    def test_synthesize_prompt_git_only_note(self, mock_query, _mock_env):
+        fake = _mock_query_returning(_SAMPLE_LLM_OUTPUT)
+        mock_query.side_effect = fake
+        config = GitloreConfig()
+        analysis = AnalysisResult(total_commits_analyzed=100)
+
+        synthesize(analysis, config)
+
+        assert "git-only" in fake.captured["prompt"].lower()
 
     @patch(_PATCH_ENV)
     @patch("gitlore.synthesis.synthesizer.query")

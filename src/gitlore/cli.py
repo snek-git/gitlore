@@ -15,7 +15,7 @@ load_dotenv()
 
 app = typer.Typer(
     name="gitlore",
-    help="Mine git history and PR reviews to generate AI coding assistant configs.",
+    help="Mine git history and PR reviews to generate knowledge reports.",
     no_args_is_help=True,
 )
 console = Console()
@@ -46,7 +46,7 @@ def analyze(
         bool, typer.Option("--debug", help="Log all LLM calls (input/output)")
     ] = False,
 ) -> None:
-    """Analyze git history and generate AI coding assistant config files."""
+    """Analyze repository and generate knowledge report."""
     import logging
 
     # Always log to file
@@ -84,7 +84,7 @@ def analyze(
         result = run_pipeline(config, git_only=git_only)
 
     if dry_run:
-        console.print(f"\n[bold]Generated CLAUDE.md content:[/bold]\n")
+        console.print("\n[bold]Generated knowledge report:[/bold]\n")
         console.print(result.content)
         console.print("\n[dim]Dry run — no files written.[/dim]")
     else:

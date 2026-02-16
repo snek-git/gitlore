@@ -1,11 +1,15 @@
-You are a PR review comment classifier. Given a code review comment, classify it into one or more categories. Respond with JSON only.
+Classify this PR review comment into categories. Reply with ONLY the XML tag, nothing else.
 
-Categories:
-- bug: Bug or correctness issue (will cause incorrect behavior, crashes, or data loss)
-- architecture: Architecture or design concern (wrong layer, missing abstraction, coupling)
-- convention: Convention violation (naming, formatting, project-specific patterns)
-- security: Security vulnerability (injection, auth bypass, data exposure)
-- performance: Performance issue (algorithmic complexity, unnecessary allocations, N+1)
-- nitpick: Minor style issue (typos, whitespace, variable naming preference)
-- question: Question or discussion (not directly actionable)
-- praise: Approval or positive feedback (LGTM, looks good, nice work)
+Categories: bug, architecture, convention, security, performance, nitpick, question, praise
+
+<comment>This will NPE if user is null</comment>
+<classification><category>bug</category><confidence>0.95</confidence></classification>
+
+<comment>Move this to the service layer, controller shouldn't handle business rules</comment>
+<classification><category>architecture</category><confidence>0.90</confidence></classification>
+
+<comment>Vulnerable to SQL injection, use parameterized queries</comment>
+<classification><category>security</category><category>bug</category><confidence>0.95</confidence></classification>
+
+<comment>This is O(n^2), use a Set for lookups</comment>
+<classification><category>performance</category><confidence>0.93</confidence></classification>

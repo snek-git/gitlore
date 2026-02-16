@@ -33,13 +33,15 @@ def _make_comment(body: str, pr_number: int = 1) -> ReviewComment:
 
 class TestParseClassification:
     def test_single_category(self):
-        cats, conf = _parse_classification('{"categories": ["bug"], "confidence": 0.95}')
+        cats, conf = _parse_classification(
+            "<classification><category>bug</category><confidence>0.95</confidence></classification>"
+        )
         assert cats == [CommentCategory.BUG]
         assert conf == pytest.approx(0.95)
 
     def test_multiple_categories(self):
         cats, conf = _parse_classification(
-            '{"categories": ["security", "bug"], "confidence": 0.9}'
+            "<classification><category>security</category><category>bug</category><confidence>0.9</confidence></classification>"
         )
         assert CommentCategory.SECURITY in cats
         assert CommentCategory.BUG in cats
@@ -48,54 +50,74 @@ class TestParseClassification:
     def test_all_categories(self):
         for cat in CommentCategory:
             cats, _ = _parse_classification(
-                f'{{"categories": ["{cat.value}"], "confidence": 0.8}}'
+                f"<classification><category>{cat.value}</category><confidence>0.8</confidence></classification>"
             )
             assert cats == [cat]
 
     def test_invalid_category_filtered(self):
         cats, _ = _parse_classification(
-            '{"categories": ["bug", "invalid_cat", "nitpick"], "confidence": 0.8}'
+            "<classification><category>bug</category><category>invalid_cat</category><category>nitpick</category><confidence>0.8</confidence></classification>"
         )
         assert cats == [CommentCategory.BUG, CommentCategory.NITPICK]
 
     def test_all_invalid_defaults_to_question(self):
         cats, _ = _parse_classification(
-            '{"categories": ["not_a_category"], "confidence": 0.8}'
+            "<classification><category>not_a_category</category><confidence>0.8</confidence></classification>"
         )
         assert cats == [CommentCategory.QUESTION]
 
-    def test_empty_categories_defaults_to_question(self):
-        cats, _ = _parse_classification('{"categories": [], "confidence": 0.5}')
-        assert cats == [CommentCategory.QUESTION]
-
-    def test_missing_categories_defaults_to_question(self):
-        cats, _ = _parse_classification('{"confidence": 0.5}')
+    def test_no_categories_defaults_to_question(self):
+        cats, _ = _parse_classification(
+            "<classification><confidence>0.5</confidence></classification>"
+        )
         assert cats == [CommentCategory.QUESTION]
 
     def test_confidence_clamped_to_range(self):
-        _, conf = _parse_classification('{"categories": ["bug"], "confidence": 1.5}')
+        _, conf = _parse_classification(
+            "<classification><category>bug</category><confidence>1.5</confidence></classification>"
+        )
         assert conf == 1.0
-        _, conf = _parse_classification('{"categories": ["bug"], "confidence": -0.3}')
+        _, conf = _parse_classification(
+            "<classification><category>bug</category><confidence>-0.3</confidence></classification>"
+        )
         assert conf == 0.0
 
     def test_missing_confidence_defaults(self):
-        _, conf = _parse_classification('{"categories": ["bug"]}')
+        _, conf = _parse_classification(
+            "<classification><category>bug</category></classification>"
+        )
         assert conf == 0.5
 
-    def test_invalid_json_returns_defaults(self):
-        cats, conf = _parse_classification("not json at all")
+    def test_empty_response_returns_defaults(self):
+        cats, conf = _parse_classification("")
         assert cats == [CommentCategory.QUESTION]
         assert conf == 0.0
 
-    def test_json_with_extra_whitespace(self):
+    def test_no_xml_returns_defaults(self):
+        cats, conf = _parse_classification("not xml at all")
+        assert cats == [CommentCategory.QUESTION]
+        assert conf == 0.0
+
+    def test_truncated_xml_extracts_categories(self):
+        """Even if response is cut off, categories found before truncation are kept."""
         cats, conf = _parse_classification(
-            '  { "categories" : [ "performance" ] , "confidence" : 0.7 }  '
+            "<classification><category>bug</category><category>performance</category><confide"
+        )
+        assert CommentCategory.BUG in cats
+        assert CommentCategory.PERFORMANCE in cats
+        assert conf == 0.5  # confidence missing, defaults
+
+    def test_whitespace_in_tags(self):
+        cats, conf = _parse_classification(
+            "<classification>\n  <category> performance </category>\n  <confidence> 0.7 </confidence>\n</classification>"
         )
         assert cats == [CommentCategory.PERFORMANCE]
         assert conf == pytest.approx(0.7)
 
     def test_case_insensitive_categories(self):
-        cats, _ = _parse_classification('{"categories": ["BUG", "Security"], "confidence": 0.8}')
+        cats, _ = _parse_classification(
+            "<classification><category>BUG</category><category>Security</category><confidence>0.8</confidence></classification>"
+        )
         assert CommentCategory.BUG in cats
         assert CommentCategory.SECURITY in cats
 
@@ -106,7 +128,7 @@ class TestParseClassification:
 class TestClassifyComments:
     @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
     async def test_classify_single_comment(self, mock_complete: AsyncMock):
-        mock_complete.return_value = '{"categories": ["bug"], "confidence": 0.95}'
+        mock_complete.return_value = "<classification><category>bug</category><confidence>0.95</confidence></classification>"
 
         comments = [_make_comment("This will NPE if user is null")]
         result = await classify_comments(comments, "test-model")
@@ -119,9 +141,9 @@ class TestClassifyComments:
     @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
     async def test_classify_multiple_comments(self, mock_complete: AsyncMock):
         mock_complete.side_effect = [
-            '{"categories": ["bug"], "confidence": 0.9}',
-            '{"categories": ["architecture"], "confidence": 0.85}',
-            '{"categories": ["praise"], "confidence": 0.98}',
+            "<classification><category>bug</category><confidence>0.9</confidence></classification>",
+            "<classification><category>architecture</category><confidence>0.85</confidence></classification>",
+            "<classification><category>praise</category><confidence>0.98</confidence></classification>",
         ]
 
         comments = [
@@ -156,9 +178,9 @@ class TestClassifyComments:
     @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
     async def test_partial_failure(self, mock_complete: AsyncMock):
         mock_complete.side_effect = [
-            '{"categories": ["bug"], "confidence": 0.9}',
+            "<classification><category>bug</category><confidence>0.9</confidence></classification>",
             RuntimeError("API timeout"),
-            '{"categories": ["nitpick"], "confidence": 0.85}',
+            "<classification><category>nitpick</category><confidence>0.85</confidence></classification>",
         ]
 
         comments = [
@@ -175,7 +197,7 @@ class TestClassifyComments:
 
     @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
     async def test_multi_label_classification(self, mock_complete: AsyncMock):
-        mock_complete.return_value = '{"categories": ["security", "bug"], "confidence": 0.95}'
+        mock_complete.return_value = "<classification><category>security</category><category>bug</category><confidence>0.95</confidence></classification>"
 
         comments = [_make_comment("SQL injection vulnerability that will crash on null")]
         result = await classify_comments(comments, "test-model")
@@ -186,7 +208,7 @@ class TestClassifyComments:
 
     @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
     async def test_llm_called_with_correct_params(self, mock_complete: AsyncMock):
-        mock_complete.return_value = '{"categories": ["bug"], "confidence": 0.9}'
+        mock_complete.return_value = "<classification><category>bug</category><confidence>0.9</confidence></classification>"
 
         comments = [_make_comment("This will NPE")]
         await classify_comments(comments, "my-model")
@@ -196,7 +218,7 @@ class TestClassifyComments:
         assert call_kwargs.kwargs["model"] == "my-model"
         assert call_kwargs.kwargs["temperature"] == 0.0
         assert call_kwargs.kwargs["max_tokens"] == 100
-        assert call_kwargs.kwargs["json_mode"] is True
+        assert "json_mode" not in call_kwargs.kwargs
         assert "This will NPE" in call_kwargs.kwargs["user"]
 
     @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
@@ -215,7 +237,7 @@ class TestClassifyComments:
             import asyncio
             await asyncio.sleep(0.01)
             current_concurrent -= 1
-            return '{"categories": ["nitpick"], "confidence": 0.8}'
+            return "<classification><category>nitpick</category><confidence>0.8</confidence></classification>"
 
         mock_complete.side_effect = tracked_complete
 

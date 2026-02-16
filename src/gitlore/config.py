@@ -11,7 +11,7 @@ from pathlib import Path
 
 @dataclass
 class ModelConfig:
-    classifier: str = "openrouter/openai/gpt-oss-120b"
+    classifier: str = "openrouter/google/gemini-3-flash-preview"
     synthesizer: str = "openrouter/anthropic/claude-sonnet-4-5-20250929"
     embedding: str = "openrouter/openai/text-embedding-3-small"
 
@@ -55,7 +55,7 @@ class GitHubConfig:
 
 @dataclass
 class OutputConfig:
-    formats: list[str] = field(default_factory=lambda: ["claude_md", "agents_md"])
+    formats: list[str] = field(default_factory=lambda: ["report"])
 
 
 @dataclass
@@ -123,7 +123,7 @@ class GitloreConfig:
 
 DEFAULT_CONFIG_TEMPLATE = """\
 [models]
-classifier = "openrouter/openai/gpt-oss-120b"
+classifier = "openrouter/google/gemini-3-flash-preview"
 synthesizer = "openrouter/anthropic/claude-sonnet-4-5-20250929"
 embedding = "openrouter/openai/text-embedding-3-small"
 
@@ -140,5 +140,5 @@ owner = ""
 repo = ""
 
 [output]
-formats = ["claude_md", "agents_md"]
+formats = ["report"]
 """

@@ -75,6 +75,7 @@ def _run_comment_pipeline(config: GitloreConfig, analysis: AnalysisResult) -> No
         return
 
     classified = asyncio.run(classify_comments(comments, config.models.classifier))
+    analysis.classified_comments = classified
     clusters = cluster_comments(classified, config.models)
     analysis.comment_clusters = clusters
 
@@ -85,8 +86,10 @@ def write_outputs(result: SynthesisResult, config: GitloreConfig) -> list[str]:
     from gitlore.formatters.claude_md import format_claude_md
     from gitlore.formatters.copilot_instructions import format_copilot_instructions
     from gitlore.formatters.cursor_rules import format_cursor_rules
+    from gitlore.formatters.report import format_report
 
     formatter_map = {
+        "report": (format_report, "gitlore-report.md"),
         "claude_md": (format_claude_md, "CLAUDE.md"),
         "agents_md": (format_agents_md, "AGENTS.md"),
         "cursor_rules": (format_cursor_rules, ".cursor/rules/gitlore.mdc"),

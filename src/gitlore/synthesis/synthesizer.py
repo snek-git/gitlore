@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -25,12 +26,15 @@ from gitlore.config import GitloreConfig
 from gitlore.models import (
     AnalysisResult,
     ChurnHotspot,
+    ClassifiedComment,
+    CommentCategory,
     CommentCluster,
     CouplingPair,
     FixAfterChain,
     HubFile,
     RevertChain,
     SynthesisResult,
+    SynthesisSection,
 )
 from gitlore.prompts import load as load_prompt
 from gitlore.synthesis.tools import create_git_tools_server
@@ -114,7 +118,7 @@ def _reverts_to_xml(chains: list[RevertChain], limit: int = 20) -> str:
         )
         lines.append(
             f"      <description>Commit \"{_xml_escape(r.original_subject)}\" was reverted"
-            f" {r.depth} time(s), affecting files: {', '.join(r.files[:5])}</description>"
+            f" {r.depth} time(s), affecting files: {_xml_escape(', '.join(r.files[:5]))}</description>"
         )
         lines.append("    </pattern>")
     lines.append("  </category>")
@@ -195,8 +199,8 @@ def _hub_files_to_xml(hubs: list[HubFile], limit: int = 15) -> str:
     return "\n".join(lines)
 
 
-def _review_patterns_to_xml(clusters: list[CommentCluster], limit: int = 20) -> str:
-    """Convert review comment clusters to XML."""
+def _review_patterns_to_xml(clusters: list[CommentCluster], limit: int = 25) -> str:
+    """Convert review comment clusters to XML with rich per-sample metadata."""
     if not clusters:
         return ""
     sorted_clusters = sorted(clusters, key=lambda c: len(c.comments), reverse=True)[
@@ -209,10 +213,24 @@ def _review_patterns_to_xml(clusters: list[CommentCluster], limit: int = 20) -> 
             f'    <pattern confidence="{conf:.2f}" occurrences="{len(cl.comments)}">'
         )
         lines.append(f"      <label>{_xml_escape(cl.label)}</label>")
-        sample_bodies = [c.comment.body[:200] for c in cl.comments[:3]]
-        for i, body in enumerate(sample_bodies):
-            lines.append(f"      <sample_{i + 1}>{_xml_escape(body)}</sample_{i + 1}>")
-        file_paths = list({c.comment.file_path for c in cl.comments if c.comment.file_path})[:5]
+        for i, cc in enumerate(cl.comments[:8]):
+            c = cc.comment
+            cats = ", ".join(cat.value for cat in cc.categories) if cc.categories else ""
+            resolved = ""
+            if c.is_resolved is not None:
+                resolved = f' resolved="{str(c.is_resolved).lower()}"'
+            lines.append(f'      <sample author="{_xml_escape(c.author)}" pr="{c.pr_number}"{resolved}>')
+            lines.append(f"        <body>{_xml_escape(c.body[:500])}</body>")
+            if cats:
+                lines.append(f"        <categories>{_xml_escape(cats)}</categories>")
+            if c.file_path:
+                lines.append(f"        <file>{_xml_escape(c.file_path)}</file>")
+            if c.diff_context:
+                lines.append(f"        <diff_context>{_xml_escape(c.diff_context[:300])}</diff_context>")
+            for j, reply in enumerate(c.thread_comments[:3]):
+                lines.append(f"        <reply>{_xml_escape(reply[:300])}</reply>")
+            lines.append("      </sample>")
+        file_paths = list({c.comment.file_path for c in cl.comments if c.comment.file_path})[:10]
         if file_paths:
             lines.append(f"      <affected_files>{', '.join(_xml_escape(f) for f in file_paths)}</affected_files>")
         lines.append(
@@ -224,16 +242,60 @@ def _review_patterns_to_xml(clusters: list[CommentCluster], limit: int = 20) -> 
     return "\n".join(lines)
 
 
+def _notable_comments_to_xml(comments: list[ClassifiedComment], limit: int = 15) -> str:
+    """Convert high-confidence unclustered comments to XML.
+
+    These are classified comments that didn't fall into HDBSCAN clusters
+    (noise points) but have high confidence and interesting categories.
+    """
+    if not comments:
+        return ""
+    # Filter to high-confidence, non-trivial categories
+    notable = [
+        c for c in comments
+        if c.confidence >= 0.8 and any(
+            cat not in (CommentCategory.NITPICK, CommentCategory.PRAISE, CommentCategory.QUESTION)
+            for cat in c.categories
+        )
+    ]
+    if not notable:
+        return ""
+    notable = sorted(notable, key=lambda c: c.confidence, reverse=True)[:limit]
+    lines = ['  <category name="notable-comments">']
+    for cc in notable:
+        c = cc.comment
+        cats = ", ".join(cat.value for cat in cc.categories)
+        resolved = ""
+        if c.is_resolved is not None:
+            resolved = f' resolved="{str(c.is_resolved).lower()}"'
+        lines.append(f'    <comment confidence="{cc.confidence:.2f}" author="{_xml_escape(c.author)}" pr="{c.pr_number}"{resolved}>')
+        lines.append(f"      <body>{_xml_escape(c.body[:500])}</body>")
+        lines.append(f"      <categories>{_xml_escape(cats)}</categories>")
+        if c.file_path:
+            lines.append(f"      <file>{_xml_escape(c.file_path)}</file>")
+        if c.diff_context:
+            lines.append(f"      <diff_context>{_xml_escape(c.diff_context[:300])}</diff_context>")
+        for reply in c.thread_comments[:2]:
+            lines.append(f"      <reply>{_xml_escape(reply[:300])}</reply>")
+        lines.append("    </comment>")
+    lines.append("  </category>")
+    return "\n".join(lines)
+
+
 def analysis_to_xml(result: AnalysisResult) -> str:
-    """Convert an AnalysisResult into XML for LLM consumption."""
+    """Convert an AnalysisResult into XML for LLM consumption.
+
+    Review data comes first (headline), then git-derived patterns (supporting context).
+    """
     sections = [
+        _review_patterns_to_xml(result.comment_clusters),
+        _notable_comments_to_xml(result.classified_comments),
         _coupling_to_xml(result.coupling_pairs),
         _hub_files_to_xml(result.hub_files),
         _hotspots_to_xml(result.hotspots),
         _reverts_to_xml(result.revert_chains),
         _fix_after_to_xml(result.fix_after_chains),
         _conventions_to_xml(result),
-        _review_patterns_to_xml(result.comment_clusters),
     ]
     body = "\n".join(s for s in sections if s)
     return f"<patterns>\n{body}\n</patterns>"
@@ -242,12 +304,10 @@ def analysis_to_xml(result: AnalysisResult) -> str:
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 _ALLOWED_TOOLS = [
-    # Built-in tools (read-only + planning)
+    # Built-in read-only tools
     "Read",
     "Grep",
     "Glob",
-    "Bash",
-    "TodoWrite",
     # MCP git tools
     "mcp__git__show_commit",
     "mcp__git__file_history",
@@ -308,9 +368,61 @@ def _pre_filter_analysis(result: AnalysisResult) -> AnalysisResult:
     # Comment clusters: keep those with enough comments
     filtered.comment_clusters = [
         c for c in result.comment_clusters if len(c.comments) >= 2
-    ][:20]
+    ][:25]
+
+    # Classified comments: pass through for notable-comments extraction
+    filtered.classified_comments = result.classified_comments
 
     return filtered
+
+
+# ── Output normalization ───────────────────────────────────────────────────────
+
+_HEADING_RE = re.compile(r"^##\s+(?P<title>.+?)\s*$")
+
+
+def _slugify(text: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug or "section"
+
+
+def _normalize_agent_output(raw: str) -> tuple[str, list[SynthesisSection]]:
+    """Parse agent markdown output into content string and sections.
+
+    Splits on ## headings to extract SynthesisSection objects.
+    Returns (full_content, sections).
+    """
+    content = raw.strip()
+    sections: list[SynthesisSection] = []
+    current_title: str | None = None
+    current_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_title, current_lines
+        if current_title:
+            section_content = "\n".join(current_lines).strip()
+            if section_content:
+                sections.append(
+                    SynthesisSection(
+                        id=_slugify(current_title),
+                        title=current_title,
+                        content=section_content,
+                    )
+                )
+        current_title = None
+        current_lines = []
+
+    for line in content.splitlines():
+        heading_match = _HEADING_RE.match(line.strip())
+        if heading_match:
+            flush()
+            current_title = heading_match.group("title")
+            continue
+        if current_title is not None:
+            current_lines.append(line)
+
+    flush()
+    return content, sections
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────
@@ -366,7 +478,7 @@ async def _run_agent(prompt: str, repo_path: str, model: str) -> str:
     """Run the agentic synthesis loop via Claude Agent SDK.
 
     The agent receives analysis data as its prompt, investigates patterns
-    using git tools, then outputs rules as markdown. Retries up to
+    using git tools, then outputs structured guidance content. Retries up to
     _MAX_RETRIES times on transient subprocess/API failures.
     """
     _configure_openrouter_env(model)
@@ -386,7 +498,7 @@ async def _run_agent(prompt: str, repo_path: str, model: str) -> str:
             mcp_servers={"git": server},
             allowed_tools=_ALLOWED_TOOLS,
             permission_mode="bypassPermissions",
-            max_turns=None,  # unlimited
+            max_turns=50,
             cwd=repo_path,
             stderr=_capture_stderr,
         )
@@ -458,17 +570,27 @@ def synthesize(
     filtered = _pre_filter_analysis(analysis)
     xml_input = analysis_to_xml(filtered)
 
-    user_prompt = (
-        f"Analyze these patterns from a codebase ({analysis.total_commits_analyzed} commits analyzed)"
-        f" and write a CLAUDE.md file.\n\n{xml_input}"
+    has_review_data = bool(analysis.comment_clusters or analysis.classified_comments)
+    review_note = (
+        "PR review data is included — lead with review insights."
+        if has_review_data
+        else "No PR review data available (git-only mode). Focus on git history patterns."
     )
 
-    content = asyncio.run(
+    user_prompt = (
+        f"Synthesize a knowledge report for this codebase ({analysis.total_commits_analyzed} commits analyzed)."
+        f" {review_note}\n\n{xml_input}"
+    )
+
+    raw_content = asyncio.run(
         _run_agent(user_prompt, config.repo_path, config.models.synthesizer)
     )
+    content, sections = _normalize_agent_output(raw_content)
 
     return SynthesisResult(
         content=content.strip(),
+        sections=sections,
         analysis=analysis,
+        has_review_data=has_review_data,
         model_used=config.models.synthesizer,
     )

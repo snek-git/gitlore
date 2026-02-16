@@ -47,6 +47,13 @@ query($owner: String!, $repo: String!, $cursor: String) {
             submittedAt
           }
         }
+        comments(first: 30) {
+          nodes {
+            body
+            author { login }
+            createdAt
+          }
+        }
       }
       pageInfo {
         endCursor
@@ -56,6 +63,18 @@ query($owner: String!, $repo: String!, $cursor: String) {
   }
 }
 """
+
+# Bot authors whose comments are always filtered out.
+_BOT_AUTHORS = frozenset({
+    "github-actions",
+    "github-actions[bot]",
+    "dependabot",
+    "dependabot[bot]",
+    "renovate",
+    "renovate[bot]",
+    "codecov",
+    "codecov[bot]",
+})
 
 # Comments matching these patterns are filtered out as trivial praise.
 _PRAISE_PATTERNS = re.compile(
@@ -75,12 +94,26 @@ _PRAISE_PATTERNS = re.compile(
 MIN_COMMENT_LENGTH = 20
 
 
+_BOT_CONTENT_PATTERNS = re.compile(
+    r"^\s*("
+    r"### Changes\s*```"  # tinygrad line-count bot
+    r"|This branch currently is behind"  # tinygrad stale-branch bot
+    r"|<!-- Sti"  # hidden bot markers
+    r"|Coverage Report"  # codecov
+    r"|## Coverage"  # codecov
+    r")",
+    re.IGNORECASE,
+)
+
+
 def _is_trivial(body: str) -> bool:
-    """Return True if a comment is too short or pure praise."""
+    """Return True if a comment is too short, pure praise, or bot-generated content."""
     stripped = body.strip()
     if len(stripped) < MIN_COMMENT_LENGTH:
         return True
     if _PRAISE_PATTERNS.match(stripped):
+        return True
+    if _BOT_CONTENT_PATTERNS.match(stripped):
         return True
     return False
 
@@ -144,6 +177,42 @@ def _extract_comments_from_pr(pr_node: dict) -> list[ReviewComment]:
                 diff_context=None,
                 thread_comments=[],
                 review_state=review.get("state"),
+            )
+        )
+
+    # Extract from PR issue comments (general discussion, not inline code review)
+    pr_comments = pr_node.get("comments", {}).get("nodes", []) or []
+    for i, comment in enumerate(pr_comments):
+        author_node = comment.get("author") or {}
+        author = author_node.get("login", "ghost")
+        if author.lower() in _BOT_AUTHORS:
+            continue
+
+        body = comment.get("body", "")
+        if _is_trivial(body):
+            continue
+
+        # Collect subsequent replies by other authors as thread context
+        thread_replies = []
+        for reply in pr_comments[i + 1:]:
+            reply_author = (reply.get("author") or {}).get("login", "ghost")
+            if reply_author.lower() in _BOT_AUTHORS:
+                continue
+            reply_body = reply.get("body", "")
+            if reply_body:
+                thread_replies.append(reply_body)
+
+        comments.append(
+            ReviewComment(
+                pr_number=pr_number,
+                file_path=None,
+                line=None,
+                body=body,
+                author=author,
+                created_at=_parse_datetime(comment.get("createdAt")),
+                is_resolved=None,
+                diff_context=None,
+                thread_comments=thread_replies,
             )
         )
 

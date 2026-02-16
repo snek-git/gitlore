@@ -8,22 +8,28 @@ The tool runs two branches of analysis. Branch A is purely local: it parses git 
 
 Both branches feed into an agentic synthesis step where an LLM investigates the patterns using read-only git tools (blame, file history, diffs) and writes the final report.
 
+## Install
+
+```
+curl -LsSf https://astral.sh/uv/install.sh | sh  # if you don't have uv
+uv tool install .
+```
+
 ## Usage
 
 ```
+gitlore init              # create gitlore.toml
+gitlore analyze            # full pipeline
+gitlore analyze --git-only # skip GitHub/LLM, local analysis only
+gitlore analyze --dry-run  # preview without writing files
+gitlore analyze --no-cache # skip cache reads
+```
+
+For development:
+
+```
 uv sync --all-extras
-uv run gitlore init              # create gitlore.toml
-uv run gitlore analyze            # full pipeline
-uv run gitlore analyze --git-only # skip GitHub/LLM, local analysis only
-uv run gitlore analyze --dry-run  # preview without writing files
-uv run gitlore analyze --no-cache # skip cache reads
-```
-
-Or install globally (`curl -LsSf https://astral.sh/uv/install.sh | sh` if you don't have uv):
-
-```
-uv tool install .
-gitlore analyze
+uv run gitlore analyze
 ```
 
 Configure models, GitHub repo, and output formats in `gitlore.toml`. Needs an `OPENROUTER_API_KEY` in `.env` (or `~/.config/gitlore/.env`) and GitHub auth via `gh` CLI or `GITHUB_TOKEN`.

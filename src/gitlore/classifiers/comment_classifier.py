@@ -10,6 +10,10 @@ from gitlore.models import ClassifiedComment, CommentCategory, ReviewComment
 from gitlore.prompts import load as load_prompt
 from gitlore.utils.llm import complete
 
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from gitlore.cache import Cache
+
 logger = logging.getLogger(__name__)
 
 VALID_CATEGORIES = {c.value for c in CommentCategory}
@@ -56,9 +60,27 @@ async def _classify_one(
     comment: ReviewComment,
     model: str,
     semaphore: asyncio.Semaphore,
+    cache: Cache | None = None,
 ) -> ClassifiedComment:
     """Classify a single review comment with concurrency control."""
     async with semaphore:
+        # Check cache first
+        if cache is not None:
+            cached = cache.get_classification(model, comment.body)
+            if cached is not None:
+                cat_strings, confidence = cached
+                categories = []
+                for cs in cat_strings:
+                    if cs in VALID_CATEGORIES:
+                        categories.append(CommentCategory(cs))
+                if not categories:
+                    categories = [CommentCategory.QUESTION]
+                return ClassifiedComment(
+                    comment=comment,
+                    categories=categories,
+                    confidence=confidence,
+                )
+
         user_msg = load_prompt("classifier_user").format(comment=comment.body)
         raw = await complete(
             model=model,
@@ -68,6 +90,16 @@ async def _classify_one(
             max_tokens=100,
         )
         categories, confidence = _parse_classification(raw)
+
+        # Store in cache
+        if cache is not None:
+            cache.set_classification(
+                model,
+                comment.body,
+                [c.value for c in categories],
+                confidence,
+            )
+
         return ClassifiedComment(
             comment=comment,
             categories=categories,
@@ -80,6 +112,7 @@ async def classify_comments(
     model: str,
     *,
     max_concurrent: int = 20,
+    cache: Cache | None = None,
 ) -> list[ClassifiedComment]:
     """Classify a list of review comments using an LLM.
 
@@ -87,6 +120,7 @@ async def classify_comments(
         comments: Review comments to classify.
         model: LiteLLM model identifier (e.g. "openrouter/deepseek/deepseek-chat").
         max_concurrent: Maximum concurrent LLM requests.
+        cache: Optional SQLite cache for classification results.
 
     Returns:
         List of ClassifiedComment with assigned categories and confidence scores.
@@ -95,7 +129,7 @@ async def classify_comments(
         return []
 
     semaphore = asyncio.Semaphore(max_concurrent)
-    tasks = [_classify_one(c, model, semaphore) for c in comments]
+    tasks = [_classify_one(c, model, semaphore, cache) for c in comments]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     classified: list[ClassifiedComment] = []

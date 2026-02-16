@@ -42,6 +42,9 @@ def analyze(
     config_path: Annotated[
         Path | None, typer.Option("--config", "-c", help="Path to gitlore.toml")
     ] = None,
+    no_cache: Annotated[
+        bool, typer.Option("--no-cache", help="Skip cache reads (still writes to cache)")
+    ] = False,
     debug: Annotated[
         bool, typer.Option("--debug", help="Log all LLM calls (input/output)")
     ] = False,
@@ -81,7 +84,7 @@ def analyze(
         config.output.formats = [f.strip() for f in formats.split(",")]
 
     with console.status("[bold green]Analyzing repository..."):
-        result = run_pipeline(config, git_only=git_only)
+        result = run_pipeline(config, git_only=git_only, use_cache=not no_cache)
 
     if dry_run:
         console.print("\n[bold]Generated knowledge report:[/bold]\n")

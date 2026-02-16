@@ -14,6 +14,10 @@ from gitlore.models import ClassifiedComment, CommentCluster
 from gitlore.prompts import load as load_prompt
 from gitlore.utils.llm import complete_sync
 
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from gitlore.cache import Cache
+
 logger = logging.getLogger(__name__)
 
 # Minimum comments needed to attempt clustering
@@ -21,9 +25,9 @@ MIN_COMMENTS_FOR_CLUSTERING = 5
 
 
 def _get_embeddings(
-    texts: list[str], model_config: ModelConfig
+    texts: list[str], model_config: ModelConfig, cache: Cache | None = None,
 ) -> NDArray[np.float64]:
-    """Get embeddings using litellm API."""
+    """Get embeddings using litellm API, with optional cache."""
     import asyncio
 
     from gitlore.utils.llm import embed
@@ -33,7 +37,18 @@ def _get_embeddings(
     if embedding_model.startswith("local/"):
         embedding_model = embedding_model[len("local/") :]
 
+    # Check cache first
+    if cache is not None:
+        cached = cache.get_embeddings(embedding_model, texts)
+        if cached is not None:
+            return np.array(cached, dtype=np.float64)
+
     embeddings = asyncio.run(embed(embedding_model, texts))
+
+    # Store in cache
+    if cache is not None:
+        cache.set_embeddings(embedding_model, texts, embeddings)
+
     return np.array(embeddings, dtype=np.float64)
 
 
@@ -111,6 +126,7 @@ def _label_cluster(
 def cluster_comments(
     classified: list[ClassifiedComment],
     model_config: ModelConfig,
+    cache: Cache | None = None,
 ) -> list[CommentCluster]:
     """Cluster classified comments by semantic similarity.
 
@@ -133,7 +149,7 @@ def cluster_comments(
 
     # 1. Prepare texts and embed
     texts = _prepare_texts(classified, model_config)
-    embeddings = _get_embeddings(texts, model_config)
+    embeddings = _get_embeddings(texts, model_config, cache)
 
     # 2. Cluster (HDBSCAN with cosine metric directly on embeddings)
     labels = _cluster_embeddings(embeddings)

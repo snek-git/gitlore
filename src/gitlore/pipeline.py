@@ -9,7 +9,7 @@ from gitlore.config import GitloreConfig
 from gitlore.models import AnalysisResult, SynthesisResult
 
 
-def run_pipeline(config: GitloreConfig, *, git_only: bool = False) -> SynthesisResult:
+def run_pipeline(config: GitloreConfig, *, git_only: bool = False, use_cache: bool = True) -> SynthesisResult:
     """Run the full gitlore analysis pipeline."""
     from gitlore.analyzers.churn import analyze_churn
     from gitlore.analyzers.commit_classifier import classify_commits
@@ -50,33 +50,46 @@ def run_pipeline(config: GitloreConfig, *, git_only: bool = False) -> SynthesisR
 
     # ── Branch B: GitHub comments + LLM (optional) ──────────────────────
     if not git_only and config.github.owner and config.github.repo:
-        _run_comment_pipeline(config, analysis)
+        _run_comment_pipeline(config, analysis, use_cache=use_cache)
 
     # ── Synthesis ───────────────────────────────────────────────────────
     return synthesize(analysis, config)
 
 
-def _run_comment_pipeline(config: GitloreConfig, analysis: AnalysisResult) -> None:
+def _run_comment_pipeline(config: GitloreConfig, analysis: AnalysisResult, *, use_cache: bool = True) -> None:
     """Fetch, classify, and cluster PR review comments."""
     import asyncio
 
+    from gitlore.cache import Cache
     from gitlore.classifiers.comment_classifier import classify_comments
     from gitlore.clustering.semantic import cluster_comments
     from gitlore.extractors.github_comments import fetch_review_comments
+
+    cache = Cache(config.repo_path) if use_cache else None
 
     token = config.github.resolve_token()
     if not token:
         return
 
-    comments = asyncio.run(
-        fetch_review_comments(token, config.github.owner, config.github.repo)
-    )
+    # Check cache for comments
+    comments = None
+    if cache is not None:
+        comments = cache.get_comments(config.github.owner, config.github.repo)
+
+    if comments is None:
+        comments = asyncio.run(
+            fetch_review_comments(token, config.github.owner, config.github.repo)
+        )
+        # Always write to cache even if use_cache was True (it already is if we're here)
+        if cache is not None and comments:
+            cache.set_comments(config.github.owner, config.github.repo, comments)
+
     if not comments:
         return
 
-    classified = asyncio.run(classify_comments(comments, config.models.classifier))
+    classified = asyncio.run(classify_comments(comments, config.models.classifier, cache=cache))
     analysis.classified_comments = classified
-    clusters = cluster_comments(classified, config.models)
+    clusters = cluster_comments(classified, config.models, cache=cache)
     analysis.comment_clusters = clusters
 
 

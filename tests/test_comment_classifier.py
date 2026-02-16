@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from gitlore.cache import Cache
 from gitlore.classifiers.comment_classifier import (
     _parse_classification,
     classify_comments,
 )
-from gitlore.models import ClassifiedComment, CommentCategory, ReviewComment
-
+from gitlore.models import CommentCategory, ReviewComment
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -247,3 +247,44 @@ class TestClassifyComments:
         assert len(result) == 10
         assert call_count == 10
         assert max_concurrent <= 3
+
+    @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
+    async def test_cache_hit_skips_llm(self, mock_complete: AsyncMock, tmp_path):
+        cache = Cache(str(tmp_path))
+        cache.set_classification("test-model", "cached comment", ["bug"], 0.95)
+
+        comments = [_make_comment("cached comment")]
+        result = await classify_comments(comments, "test-model", cache=cache)
+
+        mock_complete.assert_not_called()
+        assert len(result) == 1
+        assert result[0].categories == [CommentCategory.BUG]
+        assert result[0].confidence == pytest.approx(0.95)
+
+    @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
+    async def test_cache_miss_calls_llm_and_stores(self, mock_complete: AsyncMock, tmp_path):
+        mock_complete.return_value = "<classification><category>architecture</category><confidence>0.85</confidence></classification>"
+        cache = Cache(str(tmp_path))
+
+        comments = [_make_comment("uncached comment")]
+        result = await classify_comments(comments, "test-model", cache=cache)
+
+        mock_complete.assert_called_once()
+        assert result[0].categories == [CommentCategory.ARCHITECTURE]
+
+        # Verify it was stored in cache
+        cached = cache.get_classification("test-model", "uncached comment")
+        assert cached is not None
+        assert cached[0] == ["architecture"]
+        assert cached[1] == pytest.approx(0.85)
+
+    @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)
+    async def test_no_cache_still_works(self, mock_complete: AsyncMock):
+        """Passing cache=None should work as before."""
+        mock_complete.return_value = "<classification><category>bug</category><confidence>0.9</confidence></classification>"
+
+        comments = [_make_comment("no cache")]
+        result = await classify_comments(comments, "test-model", cache=None)
+
+        assert len(result) == 1
+        assert result[0].categories == [CommentCategory.BUG]

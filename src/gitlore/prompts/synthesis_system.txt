@@ -97,6 +97,10 @@ Your job is to add understanding by looking at the actual code.
 - Team conventions: practices visible across reviews and commit history
 - Architecture context: key boundaries, non-obvious dependencies
 - Landmines: specific things that trip people up repeatedly
+- Contributor patterns: who owns what areas, who reviews what, domain experts,
+  collaboration dynamics (e.g. "X always reviews Y's PRs in area Z"), bus factor
+  risks, reviewer bottlenecks. Use `blame_range` and `file_history` to identify
+  who maintains key files.
 - Build/test commands when discoverable from config files
 
 Do NOT include generic best practices ("write tests", "use meaningful names")
@@ -108,7 +112,7 @@ Your final message must be a `<findings>` XML block. Each finding is a pattern
 or insight you discovered. Do not output anything else — no prose, no markdown,
 no explanation outside the XML.
 
-Categories: `code_pattern`, `convention`, `architecture`, `landmine`, `tooling`, `fragile_area`
+Categories: `code_pattern`, `convention`, `architecture`, `landmine`, `tooling`, `fragile_area`, `contributor`
 Severity: `high`, `medium`, `low`
 
 ```xml

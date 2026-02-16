@@ -1,7 +1,7 @@
 [models]
-classifier = "openrouter/deepseek/deepseek-chat"     # cheap/fast tier
-synthesizer = "openrouter/anthropic/claude-opus-4-6"  # SOTA tier
-embedding = "local/nomic-embed-text-v1.5"
+classifier = "openrouter/google/gemini-3-flash-preview"
+synthesizer = "openrouter/anthropic/claude-sonnet-4-5-20250929"
+embedding = "openrouter/openai/text-embedding-3-small"
 
 [analysis]
 since_months = 12
@@ -16,4 +16,4 @@ owner = "myorg"
 repo = "myproject"
 
 [output]
-formats = ["claude_md", "agents_md"]
+formats = ["report"]

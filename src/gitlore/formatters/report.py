@@ -14,6 +14,7 @@ _CATEGORY_ORDER = [
     FindingCategory.CODE_PATTERN,
     FindingCategory.CONVENTION,
     FindingCategory.TOOLING,
+    FindingCategory.CONTRIBUTOR,
 ]
 
 _CATEGORY_LABELS = {
@@ -23,6 +24,7 @@ _CATEGORY_LABELS = {
     FindingCategory.CODE_PATTERN: "Code Patterns",
     FindingCategory.CONVENTION: "Conventions",
     FindingCategory.TOOLING: "Tooling",
+    FindingCategory.CONTRIBUTOR: "Contributor Patterns",
 }
 
 

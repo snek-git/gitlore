@@ -65,8 +65,8 @@ Both → AnalysisResult → XML → agentic synthesis (Claude Agent SDK + git to
 - Comment classification and embeddings go through `src/gitlore/utils/llm.py` (litellm)
 - Synthesis uses `claude-agent-sdk` — runs an agentic loop where the LLM gets analysis XML + 7 git investigation tools, investigates top patterns, then writes rules
 - Models configurable via `gitlore.toml` `[models]` section
-- Default classifier: `openrouter/openai/gpt-oss-120b` (cheap/fast)
-- Default synthesizer: `openrouter/google/gemini-3-flash-preview`
+- Default classifier: `openrouter/google/gemini-3-flash-preview`
+- Default synthesizer: `openrouter/anthropic/claude-sonnet-4-5-20250929`
 - Default embedding: `openrouter/openai/text-embedding-3-small`
 - XML is the input format for synthesis prompts
 - JSON mode for classification output

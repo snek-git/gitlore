@@ -254,6 +254,7 @@ class FindingCategory(Enum):
     LANDMINE = "landmine"
     TOOLING = "tooling"
     FRAGILE_AREA = "fragile_area"
+    CONTRIBUTOR = "contributor"
 
 
 class FindingSeverity(Enum):

@@ -57,8 +57,15 @@ def run_pipeline(
     )
 
     # ── Branch B: GitHub comments + LLM (optional) ──────────────────────
-    if not git_only and config.github.owner and config.github.repo:
-        _run_comment_pipeline(config, analysis, use_cache=use_cache, _log=_log)
+    if not git_only:
+        owner, repo = config.github.resolve_owner_repo(config.repo_path)
+        config.github.owner = owner
+        config.github.repo = repo
+        if owner and repo:
+            _log(f"GitHub: {owner}/{repo}")
+            _run_comment_pipeline(config, analysis, use_cache=use_cache, _log=_log)
+        else:
+            _log("No GitHub remote found, skipping PR comments")
 
     # ── Synthesis ───────────────────────────────────────────────────────
     _log("Synthesizing findings...")

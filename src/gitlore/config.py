@@ -52,6 +52,30 @@ class GitHubConfig:
             pass
         return ""
 
+    def resolve_owner_repo(self, repo_path: str) -> tuple[str, str]:
+        """Get owner/repo from config or git remote origin."""
+        if self.owner and self.repo:
+            return self.owner, self.repo
+        try:
+            result = subprocess.run(
+                ["git", "-C", repo_path, "remote", "get-url", "origin"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                url = result.stdout.strip()
+                # Handle both SSH and HTTPS formats:
+                #   git@github.com:owner/repo.git
+                #   https://github.com/owner/repo.git
+                import re
+                m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url)
+                if m:
+                    return m.group(1), m.group(2)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        return self.owner, self.repo
+
 
 @dataclass
 class OutputConfig:

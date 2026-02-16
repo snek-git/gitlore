@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "dfde800906a0",
+  "strategy": "manual-commit",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/gitlore/synthesis/synthesizer.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/df/de800906a0/0/metadata.json",
+      "transcript": "/df/de800906a0/0/full.jsonl",
+      "context": "/df/de800906a0/0/context.md",
+      "content_hash": "/df/de800906a0/0/content_hash.txt",
+      "prompt": "/df/de800906a0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5,
+    "cache_creation_tokens": 782,
+    "cache_read_tokens": 337022,
+    "output_tokens": 21,
+    "api_call_count": 3
+  }
+}

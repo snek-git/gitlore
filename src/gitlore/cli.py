@@ -87,9 +87,11 @@ def analyze(
         result = run_pipeline(config, git_only=git_only, use_cache=not no_cache)
 
     if dry_run:
+        from gitlore.formatters.report import format_report
+
         console.print("\n[bold]Generated knowledge report:[/bold]\n")
-        console.print(result.content)
-        console.print("\n[dim]Dry run — no files written.[/dim]")
+        console.print(format_report(result))
+        console.print(f"[dim]Dry run — {len(result.findings)} findings, no files written.[/dim]")
     else:
         from gitlore.pipeline import write_outputs
 

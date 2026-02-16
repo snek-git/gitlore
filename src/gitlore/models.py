@@ -247,16 +247,42 @@ class CommentCluster:
 # ── Synthesis output ────────────────────────────────────────────────────────
 
 
-# ── Pipeline aggregates ─────────────────────────────────────────────────────
+class FindingCategory(Enum):
+    CODE_PATTERN = "code_pattern"
+    CONVENTION = "convention"
+    ARCHITECTURE = "architecture"
+    LANDMINE = "landmine"
+    TOOLING = "tooling"
+    FRAGILE_AREA = "fragile_area"
+
+
+class FindingSeverity(Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
 
 
 @dataclass
-class SynthesisSection:
-    """A section of synthesized knowledge report content."""
+class EvidencePoint:
+    """A single piece of evidence supporting a finding."""
 
-    id: str
+    source: str  # reviews, coupling, reverts, hotspots, fix_after, code, conventions
+    text: str
+
+
+@dataclass
+class Finding:
+    """A synthesized insight about the codebase."""
+
     title: str
-    content: str = ""
+    category: FindingCategory
+    severity: FindingSeverity
+    insight: str
+    evidence: list[EvidencePoint] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+
+
+# ── Pipeline aggregates ─────────────────────────────────────────────────────
 
 
 @dataclass
@@ -280,9 +306,30 @@ class AnalysisResult:
 class SynthesisResult:
     """Output from the synthesis stage."""
 
-    content: str = ""
-    sections: list[SynthesisSection] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
+    raw_xml: str = ""
     analysis: AnalysisResult | None = None
     has_review_data: bool = False
     model_used: str = ""
     total_tokens: int = 0
+
+    @property
+    def content(self) -> str:
+        """Render findings as markdown for formatters that consume plain text."""
+        if not self.findings:
+            return ""
+        lines: list[str] = []
+        for f in self.findings:
+            lines.append(f"## {f.title}")
+            lines.append("")
+            if f.insight:
+                lines.append(f.insight)
+                lines.append("")
+            if f.files:
+                lines.append("**Files:** " + ", ".join(f"`{p}`" for p in f.files))
+                lines.append("")
+            if f.evidence:
+                for e in f.evidence:
+                    lines.append(f"- *{e.source}:* {e.text}")
+                lines.append("")
+        return "\n".join(lines).strip()

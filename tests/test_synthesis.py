@@ -348,22 +348,39 @@ class TestAnalysisToXml:
 
 
 _SAMPLE_LLM_OUTPUT = """\
-This repo combines deterministic git analyzers with LLM-backed synthesis.
-
-## Review Insights
-
-Reviewers consistently flag missing error handling in API routes, particularly
-around database timeouts and user-not-found cases.
-
-## Architecture & Data Flow
-
-`src/gitlore/pipeline.py` merges deterministic git analysis with optional PR-comment analysis.
-`src/gitlore/synthesis/synthesizer.py` turns analysis XML into a knowledge report.
-
-## Repository Conventions
-
-- Keep analyzers deterministic and free of direct LLM calls.
-- Use `litellm.acompletion` with bounded concurrency for async LLM work.
+<findings>
+<finding category="fragile_area" severity="high">
+<title>Missing error handling in API routes</title>
+<files>
+<file>src/api/routes.ts</file>
+<file>src/api/middleware.ts</file>
+</files>
+<evidence>
+<point source="reviews">Reviewers consistently flag missing try/catch around database and external service calls</point>
+<point source="hotspots">src/api/routes.ts is the top churn hotspot with 35% fix ratio</point>
+</evidence>
+<insight>The API layer lacks consistent error handling. Database timeouts and user-not-found cases are the most common gaps flagged by reviewers.</insight>
+</finding>
+<finding category="architecture" severity="medium">
+<title>Pipeline merges deterministic and LLM analysis</title>
+<files>
+<file>src/gitlore/pipeline.py</file>
+<file>src/gitlore/synthesis/synthesizer.py</file>
+</files>
+<evidence>
+<point source="code">pipeline.py orchestrates both branches, synthesizer.py consumes XML</point>
+</evidence>
+<insight>The pipeline merges deterministic git analysis with optional PR-comment analysis. The synthesizer turns analysis XML into structured findings.</insight>
+</finding>
+<finding category="convention" severity="low">
+<title>Keep analyzers deterministic</title>
+<evidence>
+<point source="conventions">92% conventional commit adherence with scope</point>
+<point source="code">Analyzers are pure Python with no LLM calls</point>
+</evidence>
+<insight>Keep analyzers deterministic and free of direct LLM calls. Use litellm.acompletion with bounded concurrency for async LLM work.</insight>
+</finding>
+</findings>
 """
 
 
@@ -398,7 +415,7 @@ _PATCH_ENV = "gitlore.synthesis.synthesizer._configure_openrouter_env"
 class TestSynthesizer:
     @patch(_PATCH_ENV)
     @patch("gitlore.synthesis.synthesizer.query")
-    def test_synthesize_returns_content(self, mock_query, _mock_env, sample_analysis: AnalysisResult):
+    def test_synthesize_returns_findings(self, mock_query, _mock_env, sample_analysis: AnalysisResult):
         fake = _mock_query_returning(_SAMPLE_LLM_OUTPUT)
         mock_query.side_effect = fake
         config = GitloreConfig()
@@ -408,11 +425,13 @@ class TestSynthesizer:
         mock_query.assert_called_once()
         assert "<patterns>" in fake.captured["prompt"]
         assert isinstance(result, SynthesisResult)
-        assert "## Review Insights" in result.content
-        assert "## Architecture & Data Flow" in result.content
-        assert result.sections
-        assert result.sections[0].title == "Review Insights"
-        assert "error handling" in result.sections[0].content.lower()
+        assert len(result.findings) == 3
+        assert result.findings[0].title == "Missing error handling in API routes"
+        assert result.findings[0].category.value == "fragile_area"
+        assert result.findings[0].severity.value == "high"
+        assert "error handling" in result.findings[0].insight.lower()
+        assert "src/api/routes.ts" in result.findings[0].files
+        assert len(result.findings[0].evidence) == 2
         assert fake.captured["options"].max_turns == 50
         assert result.analysis is sample_analysis
         assert result.model_used == config.models.synthesizer
@@ -430,26 +449,25 @@ class TestSynthesizer:
     @patch(_PATCH_ENV)
     @patch("gitlore.synthesis.synthesizer.query")
     def test_synthesize_no_review_data_flag(self, mock_query, _mock_env):
-        mock_query.side_effect = _mock_query_returning("No strong patterns detected.")
+        mock_query.side_effect = _mock_query_returning("<findings></findings>")
         config = GitloreConfig()
         empty_analysis = AnalysisResult()
 
         result = synthesize(empty_analysis, config)
 
         assert result.has_review_data is False
-        assert "git-only" in _mock_query_returning._last_prompt if hasattr(_mock_query_returning, "_last_prompt") else True
 
     @patch(_PATCH_ENV)
     @patch("gitlore.synthesis.synthesizer.query")
     def test_synthesize_with_empty_analysis(self, mock_query, _mock_env):
-        mock_query.side_effect = _mock_query_returning("No strong patterns detected.")
+        mock_query.side_effect = _mock_query_returning("<findings></findings>")
         config = GitloreConfig()
         empty_analysis = AnalysisResult()
 
         result = synthesize(empty_analysis, config)
 
         assert isinstance(result, SynthesisResult)
-        assert "No strong patterns" in result.content
+        assert len(result.findings) == 0
 
     @patch(_PATCH_ENV)
     @patch("gitlore.synthesis.synthesizer.query")
@@ -460,7 +478,7 @@ class TestSynthesizer:
 
         synthesize(sample_analysis, config)
 
-        assert "review insights" in fake.captured["prompt"].lower()
+        assert "review" in fake.captured["prompt"].lower()
 
     @patch(_PATCH_ENV)
     @patch("gitlore.synthesis.synthesizer.query")
@@ -499,3 +517,24 @@ class TestSynthesizer:
         synthesize(sample_analysis, config)
 
         assert "src/utils/helpers.ts" not in fake.captured["prompt"]
+
+    @patch(_PATCH_ENV)
+    @patch("gitlore.synthesis.synthesizer.query")
+    def test_synthesize_stores_raw_xml(self, mock_query, _mock_env, sample_analysis: AnalysisResult):
+        mock_query.side_effect = _mock_query_returning(_SAMPLE_LLM_OUTPUT)
+        config = GitloreConfig()
+
+        result = synthesize(sample_analysis, config)
+
+        assert "<findings>" in result.raw_xml
+
+    @patch(_PATCH_ENV)
+    @patch("gitlore.synthesis.synthesizer.query")
+    def test_content_property_renders_markdown(self, mock_query, _mock_env, sample_analysis: AnalysisResult):
+        mock_query.side_effect = _mock_query_returning(_SAMPLE_LLM_OUTPUT)
+        config = GitloreConfig()
+
+        result = synthesize(sample_analysis, config)
+
+        assert "## Missing error handling in API routes" in result.content
+        assert "src/api/routes.ts" in result.content

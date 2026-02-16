@@ -30,11 +30,14 @@ from gitlore.models import (
     CommentCategory,
     CommentCluster,
     CouplingPair,
+    EvidencePoint,
+    Finding,
+    FindingCategory,
+    FindingSeverity,
     FixAfterChain,
     HubFile,
     RevertChain,
     SynthesisResult,
-    SynthesisSection,
 )
 from gitlore.prompts import load as load_prompt
 from gitlore.synthesis.tools import create_git_tools_server
@@ -376,53 +379,74 @@ def _pre_filter_analysis(result: AnalysisResult) -> AnalysisResult:
     return filtered
 
 
-# ── Output normalization ───────────────────────────────────────────────────────
+# ── Output parsing ─────────────────────────────────────────────────────────────
 
-_HEADING_RE = re.compile(r"^##\s+(?P<title>.+?)\s*$")
+_VALID_CATEGORIES = {c.value for c in FindingCategory}
+_VALID_SEVERITIES = {s.value for s in FindingSeverity}
+
+_FINDINGS_RE = re.compile(r"<findings>(.*)</findings>", re.DOTALL)
+_FINDING_RE = re.compile(r"<finding\b([^>]*)>(.*?)</finding>", re.DOTALL)
+_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
+_TAG_RE = re.compile(r"<(\w+)(?:\s+[^>]*)?>([^<]*)</\1>")
+_POINT_RE = re.compile(r'<point\s+source="([^"]*)">(.*?)</point>', re.DOTALL)
+_FILE_RE = re.compile(r"<file>([^<]+)</file>")
 
 
-def _slugify(text: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return slug or "section"
+def _parse_findings_xml(raw: str) -> list[Finding]:
+    """Parse XML findings from agent output into Finding objects."""
+    # Extract <findings> block
+    findings_match = _FINDINGS_RE.search(raw)
+    if not findings_match:
+        log.warning("No <findings> block found in agent output")
+        return []
 
+    findings_xml = findings_match.group(1)
+    findings: list[Finding] = []
 
-def _normalize_agent_output(raw: str) -> tuple[str, list[SynthesisSection]]:
-    """Parse agent markdown output into content string and sections.
+    for match in _FINDING_RE.finditer(findings_xml):
+        attrs_str, body = match.group(1), match.group(2)
+        attrs = dict(_ATTR_RE.findall(attrs_str))
 
-    Splits on ## headings to extract SynthesisSection objects.
-    Returns (full_content, sections).
-    """
-    content = raw.strip()
-    sections: list[SynthesisSection] = []
-    current_title: str | None = None
-    current_lines: list[str] = []
+        cat_str = attrs.get("category", "code_pattern")
+        sev_str = attrs.get("severity", "medium")
+        category = FindingCategory(cat_str) if cat_str in _VALID_CATEGORIES else FindingCategory.CODE_PATTERN
+        severity = FindingSeverity(sev_str) if sev_str in _VALID_SEVERITIES else FindingSeverity.MEDIUM
 
-    def flush() -> None:
-        nonlocal current_title, current_lines
-        if current_title:
-            section_content = "\n".join(current_lines).strip()
-            if section_content:
-                sections.append(
-                    SynthesisSection(
-                        id=_slugify(current_title),
-                        title=current_title,
-                        content=section_content,
-                    )
-                )
-        current_title = None
-        current_lines = []
+        # Extract simple tags
+        title = ""
+        insight = ""
+        for tag_match in _TAG_RE.finditer(body):
+            tag_name, tag_text = tag_match.group(1), tag_match.group(2).strip()
+            if tag_name == "title":
+                title = tag_text
+            elif tag_name == "insight":
+                # insight can be multiline, re-extract with dotall
+                insight_match = re.search(r"<insight>(.*?)</insight>", body, re.DOTALL)
+                if insight_match:
+                    insight = insight_match.group(1).strip()
 
-    for line in content.splitlines():
-        heading_match = _HEADING_RE.match(line.strip())
-        if heading_match:
-            flush()
-            current_title = heading_match.group("title")
-            continue
-        if current_title is not None:
-            current_lines.append(line)
+        # Extract evidence points
+        evidence = []
+        for point_match in _POINT_RE.finditer(body):
+            evidence.append(EvidencePoint(
+                source=point_match.group(1),
+                text=point_match.group(2).strip(),
+            ))
 
-    flush()
-    return content, sections
+        # Extract files
+        files = _FILE_RE.findall(body)
+
+        if title:
+            findings.append(Finding(
+                title=title,
+                category=category,
+                severity=severity,
+                insight=insight,
+                evidence=evidence,
+                files=[f.strip() for f in files],
+            ))
+
+    return findings
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────
@@ -566,30 +590,30 @@ def synthesize(
     analysis: AnalysisResult,
     config: GitloreConfig,
 ) -> SynthesisResult:
-    """Run the full synthesis pipeline: filter -> XML -> agent -> parse."""
+    """Run the full synthesis pipeline: filter -> XML -> agent -> parse findings."""
     filtered = _pre_filter_analysis(analysis)
     xml_input = analysis_to_xml(filtered)
 
     has_review_data = bool(analysis.comment_clusters or analysis.classified_comments)
     review_note = (
-        "PR review data is included — lead with review insights."
+        "PR review data is included. Use review clusters and git patterns together."
         if has_review_data
         else "No PR review data available (git-only mode). Focus on git history patterns."
     )
 
     user_prompt = (
-        f"Synthesize a knowledge report for this codebase ({analysis.total_commits_analyzed} commits analyzed)."
+        f"Analyze this codebase ({analysis.total_commits_analyzed} commits analyzed)."
         f" {review_note}\n\n{xml_input}"
     )
 
-    raw_content = asyncio.run(
+    raw_output = asyncio.run(
         _run_agent(user_prompt, config.repo_path, config.models.synthesizer)
     )
-    content, sections = _normalize_agent_output(raw_content)
+    findings = _parse_findings_xml(raw_output)
 
     return SynthesisResult(
-        content=content.strip(),
-        sections=sections,
+        findings=findings,
+        raw_xml=raw_output.strip(),
         analysis=analysis,
         has_review_data=has_review_data,
         model_used=config.models.synthesizer,

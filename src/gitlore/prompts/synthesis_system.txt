@@ -89,9 +89,8 @@ before you start writing. A report that just summarizes the input data without
 investigating it with tools is not useful — the user already has the raw data.
 Your job is to add understanding by looking at the actual code.
 
-## What belongs in this report
+## What to look for
 
-**Include:**
 - Recurring patterns: things that keep happening across multiple PRs, commits, or files
 - Structural insights: why certain files couple, what makes hotspots hot
 - Fragile areas: where reverts cluster, where fix-after chains concentrate
@@ -100,25 +99,52 @@ Your job is to add understanding by looking at the actual code.
 - Landmines: specific things that trip people up repeatedly
 - Build/test commands when discoverable from config files
 
-**Do not include:**
-- Lists of individual PRs or commits (use them as citations, not content)
-- Raw statistics without interpretation
-- Generic best practices not grounded in this project's data
-- File-by-file descriptions of the codebase
-- Anything the reader can figure out by reading code or config files
+Do NOT include generic best practices ("write tests", "use meaningful names")
+that aren't grounded in this project's data.
 
-## Style
+## Output format
 
-- Plain markdown with headers, bullets, code blocks — whatever fits naturally
-- Sections emerge from the data, not from a fixed template
-- Section headers should name the actual pattern, not the data source
-  (e.g., "Renderer changes break CI unpredictably" not "Review insights")
-- Direct and specific — reference actual file paths, commands, patterns
-- Depth over brevity — explain the "why" behind patterns
-- No length cap, but every line should earn its place
+Your final message must be a `<findings>` XML block. Each finding is a pattern
+or insight you discovered. Do not output anything else — no prose, no markdown,
+no explanation outside the XML.
 
-## Output
+Categories: `code_pattern`, `convention`, `architecture`, `landmine`, `tooling`, `fragile_area`
+Severity: `high`, `medium`, `low`
 
-Your final message should be the report content in plain markdown.
-Start with a brief orientation (2-3 sentences about the project), then
-organized sections with `## ` headers. Do not wrap in code fences or XML.
+```xml
+<findings>
+<finding category="fragile_area" severity="high">
+<title>Renderer and CUDA compiler are tightly coupled</title>
+<files>
+<file>tinygrad/renderer/cstyle.py</file>
+<file>tinygrad/runtime/support/compiler_cuda.py</file>
+</files>
+<evidence>
+<point source="coupling">Co-change in 68% of commits touching either file</point>
+<point source="reverts">3 reverts in renderer subsystem in 3 months</point>
+<point source="reviews">Process replay failures flagged across multiple PRs</point>
+</evidence>
+<insight>PTX generation depends on renderer output format. Changes to rendering
+logic cascade into compiler_cuda.py, causing CI failures that are hard to
+predict from the diff alone.</insight>
+</finding>
+<finding category="convention" severity="medium">
+<title>Push failing test before the fix</title>
+<evidence>
+<point source="reviews">Reviewers consistently require demonstrating the regression in CI first</point>
+<point source="code">Test files show pattern of "add failing test" commits followed by fix commits</point>
+</evidence>
+<insight>The team enforces test-first debugging so that CI proves the regression
+exists before any fix lands. This prevents "fix" PRs that don't actually
+reproduce the original problem.</insight>
+</finding>
+</findings>
+```
+
+Rules:
+- Each finding should be a distinct insight, not a rehash of the input data
+- `<files>` is optional — conventions and tooling findings often have no files
+- `<evidence>` should cite multiple sources where possible (reviews, coupling, reverts, hotspots, fix_after, code, conventions)
+- `<insight>` is the "so what" — why this matters for someone working in this codebase
+- Individual PR numbers can appear in evidence points as citations, but the finding itself should describe a pattern, not a single event
+- Aim for 8-20 findings depending on how much the data supports

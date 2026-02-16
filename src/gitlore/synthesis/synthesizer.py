@@ -555,6 +555,8 @@ async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object
                         elif isinstance(block, ToolResultBlock):
                             content_preview = str(block.content)[:200] if block.content else "(empty)"
                             log.debug("  ToolResult: %s", content_preview)
+                            if block.is_error:
+                                _print(f"  [{msg_count}] !! tool error: {content_preview}")
                         else:
                             log.debug("  %s", type(block).__name__)
                     # Print agent activity to console

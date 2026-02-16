@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "0d5038ce9418",
+  "strategy": "manual-commit",
+  "branch": "master",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "CLAUDE.md",
+    "gitlore.toml.example",
+    "src/gitlore/formatters/html.py",
+    "src/gitlore/formatters/report.py",
+    "src/gitlore/models.py",
+    "src/gitlore/prompts/synthesis_system.txt"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0d/5038ce9418/0/metadata.json",
+      "transcript": "/0d/5038ce9418/0/full.jsonl",
+      "context": "/0d/5038ce9418/0/context.md",
+      "content_hash": "/0d/5038ce9418/0/content_hash.txt",
+      "prompt": "/0d/5038ce9418/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 30,
+    "cache_creation_tokens": 15345,
+    "cache_read_tokens": 1552869,
+    "output_tokens": 940,
+    "api_call_count": 26
+  }
+}

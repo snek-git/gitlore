@@ -1,0 +1,1082 @@
+Implement the following plan:
+
+# Plan: Shift Output from Config Files to Knowledge Reports
+
+## Context
+
+gitlore currently synthesizes git + PR data into AI assistant config files (CLAUDE.md, AGENTS.md, etc.). The real differentiator is the semantic layer — PR review comments, reviewer reasoning, tribal knowledge from discussions — but the current pipeline buries this. Review clusters get 3 samples at 200 chars each, listed last in the XML. The output is formatted as prescriptive agent instructions rather than genuine knowledge.
+
+**Goal**: The primary output becomes a knowledge report that documents what the tool actually found. PR review insights are the headline. Stats are supporting evidence. CLAUDE.md etc. become optional secondary formats.
+
+## Changes
+
+### 1. Enrich PR data in XML input (`synthesizer.py`)
+
+`_review_patterns_to_xml()` currently sends almost nothing useful (3 truncated bodies, 5 file paths). The `ReviewComment` model already has `thread_comments`, `diff_context`, `author`, `pr_number`, `is_resolved` — none of it is passed through.
+
+- Increase samples from 3 → 8, body limit from 200 → 500 chars
+- Include per-sample: `author`, `pr_number`, `is_resolved`, `categories`, `file_path`
+- Include `thread_comments` (first 2-3 replies, 300 char each) — the discussion is where real knowledge lives
+- Include `diff_context` when available (up to 300 chars)
+- Increase `affected_files` from 5 → 10
+- Increase cluster limit from 20 → 25
+
+Move `_review_patterns_to_xml()` from **last** to **first** in `analysis_to_xml()` sections list.
+
+Store all classified comments on `AnalysisResult` (not just clustered ones) — add `classified_comments: list[ClassifiedComment]` field. Add a new `_notable_comments_to_xml()` for high-confidence unclustered comments (HDBSCAN noise). Pipeline's `_run_comment_pipeline()` sets `analysis.classified_comments = classified` before clustering.
+
+### 2. Rewrite synthesis prompt (`synthesis_system.txt`)
+
+Replace entirely. Key shifts:
+- Frame as "knowledge report" not "agent-guidance document"
+- PR review data is "the headline", stats are "supporting context"
+- Phase 1: understand review themes (what do reviewers flag? resolved or recurring?)
+- Phase 2: cross-reference reviews with code patterns (coupling, hotspots, reverts)
+- Phase 3: synthesize knowledge — lead with insight, support with evidence
+- Output: plain markdown, no XML contract, no fixed template
+- Sections emerge from data (theme-based, not commands/bullets/checklist)
+- No length cap — depth over brevity
+- Git-only mode acknowledged as limited
+
+### 3. Simplify models (`models.py`)
+
+- `SynthesisSection`: replace `kind`/`items` with single `content: str` field (raw markdown per section)
+- `SynthesisResult`: add `has_review_data: bool = False`
+- `AnalysisResult`: add `classified_comments: list[ClassifiedComment]` field
+- Remove dead `Rule` and `RuleCategory` classes (unused anywhere)
+
+### 4. Simplify output normalization (`synthesizer.py`)
+
+Delete the entire `<gitlore-doc>` XML parsing pipeline (~170 lines):
+- Remove `_extract_doc_xml`, `_parse_doc_sections_from_xml`, `_render_markdown`, `_append_unique`, `_normalize_text` (item-level), `_DOC_ROOT`, `_MAX_ITEMS_PER_SECTION`, `_BULLET_RE`
+
+Replace with simple markdown header parser:
+- Split on `## ` headings → `SynthesisSection(id=slug, title=heading, content=lines_under_heading)`
+- `_normalize_agent_output()` returns `(raw_content, parsed_sections)`
+
+Update user prompt in `synthesize()`: "Synthesize a knowledge report..." + note whether PR data is present. Set `has_review_data` on result.
+
+### 5. Add report formatter, update defaults
+
+New file `src/gitlore/formatters/report.py`:
+- `format_report(result) -> str` — header with date/commit count/PR data flag, full content, metadata footer
+- Output path: `gitlore-report.md`
+
+Update `pipeline.py` `write_outputs()`: add `"report"` to formatter_map.
+Update `config.py` `OutputConfig`: default formats → `["report"]` (was `["claude_md", "agents_md"]`).
+Export from `formatters/__init__.py`.
+
+Existing formatters (claude_md, agents_md, cursor_rules, copilot_instructions) stay as-is — they still work since they just wrap `result.content`.
+
+### 6. CLI updates (`cli.py`)
+
+- App help: "Mine git history and PR reviews to generate knowledge reports"
+- `analyze` docstring: "Analyze repository and generate knowledge report"
+- Dry-run message: "Generated knowledge report:" (was "Generated CLAUDE.md content:")
+
+## Files to modify
+
+| File | Change |
+|------|--------|
+| `src/gitlore/models.py` | SynthesisSection content field, AnalysisResult.classified_comments, SynthesisResult.has_review_data, remove Rule/RuleCategory |
+| `src/gitlore/prompts/synthesis_system.txt` | Full rewrite |
+| `src/gitlore/synthesis/synthesizer.py` | Enrich review XML, reorder categories, add notable comments XML, simplify normalization, update prompts |
+| `src/gitlore/formatters/report.py` | New file |
+| `src/gitlore/formatters/__init__.py` | Export format_report |
+| `src/gitlore/pipeline.py` | Store classified_comments, add report to formatter_map |
+| `src/gitlore/config.py` | Default format → ["report"] |
+| `src/gitlore/cli.py` | Help text, dry-run label |
+| `tests/test_synthesis.py` | Update sample output (markdown not XML), update assertions, add review XML enrichment tests |
+
+## Verification
+
+1. `uv run pytest -x -q` — all tests pass
+2. `uv run ruff check src/ tests/` — no lint errors
+3. `uv run mypy src/` — type checks pass
+4. `uv run gitlore analyze --dry-run --git-only` — produces a report (limited, since no PR data)
+
+
+If you need specific details from before exiting plan mode (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/snek/.REDACTED.jsonl
+
+If this plan can be broken down into multiple independent tasks, consider using the TeamCreate tool to create a team and parallelize the work.
+
+---
+
+can you run a test with the last 3 months of tinygrad pr comments?
+
+---
+
+<task-notification>
+<task-id>b3ad61e</task-id>
+<output-file>/tmp/claude-1000/-home-snek-dev-projects-gitlore/tasks/b3ad61e.output</output-file>
+<status>completed</status>
+<summary>Background command "Run gitlore against tinygrad with PR comments" completed (exit code 0)</summary>
+</task-notification>
+Read the output file to retrieve the result: /tmp/claude-1000/-home-snek-dev-projects-gitlore/tasks/b3ad61e.output
+
+---
+
+<task-notification>
+<task-id>bf644fe</task-id>
+<output-file>/tmp/claude-1000/-home-snek-dev-projects-gitlore/tasks/bf644fe.output</output-file>
+<status>killed</status>
+<summary>Background command "Run gitlore against tinygrad with PR comment config" was stopped</summary>
+</task-notification>
+Read the output file to retrieve the result: /tmp/claude-1000/-home-snek-dev-projects-gitlore/tasks/bf644fe.output
+
+---
+
+only 16 comments? bro i see at least 50 that were merged the last 2 days.
+
+---
+
+and what was the output? from the agent.
+
+---
+
+okay this is good. what happens to the comments that gpt-oss failed to process? let's try to debug that.
+
+---
+
+maybe the prompt isnt good enough either tbh.
+
+---
+
+now can we run it again? at least only the parsing part... and lets cache results so that we dont abuse the gh api
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+gemini 2??? we use gemini 3 flash preview brother.
+
+---
+
+sure.
+
+---
+
+now lets rerun. can we use the cache we already had?
+
+---
+
+[Request interrupted by user]
+
+---
+
+what was the report?
+
+---
+
+ok. lets rerun using gemini 3 as the thingy thing and see what it has to say.
+
+---
+
+how many steps did the synethesizer take?
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+i was running for likr 15 seconds
+
+---
+
+[Request interrupted by user]
+
+---
+
+yea rerun. my bad.
+
+---
+
+i think its a bit confused on what the expectations are + i think, it should be utilizing the other programmatic context a bit more. it doesnt feel like it does. on top of all that. i thikn we need to cahce the llm-filtered per pr comment thingy as well. keep it all in a db. we were supposed to use embedding too no? do we?
+
+---
+
+[Request interrupted by user]
+
+---
+
+pls before applying the plan, write the readme. make it more about what this does as opposed to tehcnical. brief and to the point. dont write like ai slop. no emojis or overformatting 3-5 sentences, some formatting like paragraphs and titels.
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically analyze the entire conversation:
+
+1. **Initial Plan Implementation** - User asked to implement a plan to shift output from config files to knowledge reports. The plan involved:
+   - Enriching PR data in XML input
+   - Rewriting synthesis prompt
+   - Simplifying models
+   - Simplifying output normalization
+   - Adding report formatter
+   - CLI updates
+
+2. **Models.py changes** - Removed Rule/RuleCategory, changed SynthesisSection to use `content: str` instead of `kind`/`items`, added `classified_comments` to AnalysisResult, added `has_review_data` to SynthesisResult.
+
+3. **Synthesis prompt rewrite** - Complete rewrite of synthesis_system.txt to frame as "knowledge report" instead of agent guidance.
+
+4. **Synthesizer.py major rewrite** - Enriched _review_patterns_to_xml (3→8 samples, 200→500 chars, added metadata), added _notable_comments_to_xml, reordered XML sections (review first), deleted ~170 lines of XML output parsing, replaced with simple markdown header parser, updated user prompt.
+
+5. **Report formatter** - New file formatters/report.py, updated __init__.py, pipeline.py, config.py (default format → ["report"]), cli.py help text.
+
+6. **Tests updated** - Changed sample output from XML to markdown, updated assertions, added new tests for review enrichment and notable comments.
+
+7. **Errors fixed**: 
+   - F541 f-string without placeholders in cli.py
+   - I001 import sorting in models.py and synthesizer.py
+   - quality_gate.py mypy error after removing Rule - deleted the dead file
+   - Removed unused xml.etree.ElementTree import
+
+8. **Tinygrad test run** - User asked to test with tinygrad PR comments. Initially only got 16 comments because the GraphQL query only fetched `reviewThreads`, not PR `comments` (issue comments). 
+
+9. **GitHub extractor fix** - Added `comments(first: 30)` to GraphQL query, added `_BOT_AUTHORS` set, added `_BOT_CONTENT_PATTERNS` regex, extracted PR issue comments with thread replies. Result: 150 comments (up from 16).
+
+10. **Classifier failures** - gpt-oss-120b failed on 120/150 comments (76% failure rate). Most returned empty responses consuming 100 tokens of whitespace.
+
+11. **JSON→XML switch for classifier** - User suggested XML. Rewrote prompts and parser to use `<classification><category>...</category><confidence>...</confidence></classification>` format. More resilient to truncation.
+
+12. **Prompt simplification** - User said prompt wasn't good enough. Collapsed 3 prompt files into 2: system prompt now has few-shot examples using `<comment>` → `<classification>` pattern, user prompt is just `<comment>{body}</comment>`. Deleted classifier_few_shot.txt.
+
+13. **Model comparison** - Tested gpt-oss-120b (11%), gemini-2.0-flash (69% but wrong format), gemini-3-flash-preview (100%). User corrected "we use gemini 3 flash preview brother."
+
+14. **Default classifier changed** to gemini-3-flash-preview.
+
+15. **Cached rerun** - Created scripts/run_cached.py that monkey-patches pipeline to use cached comments. Ran successfully with 10 clusters, good report.
+
+16. **Synthesizer investigation count** - User asked how many steps. Answer: 3 turns (repo_tree, Read README, write). User noted it's too lazy.
+
+17. **User identified multiple issues**: synthesizer lazy, not using programmatic context, need caching (DB), embeddings question.
+
+18. **Plan created** for SQLite cache + stronger synthesis prompt. User approved but then asked to write README first.
+
+19. **README draft** - User asked for brief, non-AI-slop README. Draft written into plan file. Plan mode is currently active.
+
+Let me now trace the current state of all files and pending work.
+
+Summary:
+1. Primary Request and Intent:
+   The user's overarching project is `gitlore`, a CLI tool that mines git history and PR reviews to generate knowledge reports. The conversation covered three major phases:
+   
+   **Phase 1**: Implement a plan to shift output from AI config files to knowledge reports. This involved enriching PR review XML data, rewriting the synthesis prompt, simplifying models, replacing XML output parsing with markdown parsing, adding a report formatter, and updating CLI text.
+   
+   **Phase 2**: Test against tinygrad's repo, which exposed three bugs: (a) GitHub extractor only fetched `reviewThreads` not PR issue `comments` — missing 90% of tinygrad's review feedback, (b) classifier model `gpt-oss-120b` had 76-89% failure rate returning empty responses, (c) JSON output format was fragile — switched to XML.
+   
+   **Phase 3**: User identified deeper issues — synthesizer only takes 3 turns (lazy, doesn't investigate patterns with git tools), no caching (every run re-fetches/re-classifies/re-embeds), and the prompt doesn't push the agent to use programmatic context. A plan was created for SQLite cache + stronger synthesis prompt. Before implementing that plan, user asked for a README to be written first.
+
+2. Key Technical Concepts:
+   - Two-branch analysis pipeline: Branch A (git log, local, no LLM) + Branch B (GitHub GraphQL + LLM classification + HDBSCAN clustering)
+   - Agentic synthesis via claude-agent-sdk with 7 read-only git tools as MCP server
+   - LLM classification using XML output format (switched from JSON for truncation resilience)
+   - HDBSCAN clustering with litellm embeddings
+   - SQLite caching strategy (planned): comments table with TTL, classifications keyed by model+body hash, embeddings keyed by model+text hash
+   - GitHub GraphQL API: `reviewThreads` (inline code reviews) vs `comments` (PR issue comments) — different repos use different styles
+   - Bot filtering: `_BOT_AUTHORS` frozenset + `_BOT_CONTENT_PATTERNS` regex for content-based filtering
+
+3. Files and Code Sections:
+
+   - **`src/gitlore/models.py`**
+     - Removed `Rule` and `RuleCategory` classes (dead code)
+     - `SynthesisSection`: replaced `kind: str` and `items: list[str]` with `content: str`
+     - `AnalysisResult`: added `classified_comments: list[ClassifiedComment]`
+     - `SynthesisResult`: added `has_review_data: bool = False`
+
+   - **`src/gitlore/synthesis/synthesizer.py`**
+     - Major rewrite. Added `CommentCategory` and `ClassifiedComment` imports
+     - `_review_patterns_to_xml()`: enriched from 3 samples/200 chars to 8 samples/500 chars with author/pr/resolved/categories/file/diff_context/thread_comments per sample, affected_files 5→10, cluster limit 20→25
+     - Added `_notable_comments_to_xml()` for high-confidence unclustered comments (filters ≥0.8 confidence, excludes NITPICK/PRAISE/QUESTION)
+     - `analysis_to_xml()`: reordered — review patterns first, notable comments second, then coupling/hubs/hotspots/reverts/fix-after/conventions
+     - Deleted ~170 lines: `_extract_doc_xml`, `_parse_doc_sections_from_xml`, `_render_markdown`, `_append_unique`, `_normalize_text`, `_parse_markdown_sections` (old), `_DOC_ROOT`, `_MAX_ITEMS_PER_SECTION`, `_BULLET_RE`
+     - New `_normalize_agent_output()`: simple `## ` heading splitter → `SynthesisSection(id=slug, title=heading, content=lines)`
+     - `synthesize()`: new user prompt with "knowledge report" framing, review data flag, sets `has_review_data`
+     - Removed `import xml.etree.ElementTree as ET`
+     - Pre-filter now passes through `classified_comments`, cluster limit 20→25
+
+   - **`src/gitlore/prompts/synthesis_system.txt`**
+     - Complete rewrite: "knowledge report" framing, 4 phases (understand project → understand review themes → cross-reference with code patterns → write report), plain markdown output, no XML contract
+     - Current weakness: Phase 3 mentions cross-referencing but doesn't explicitly tell agent to use git tools for investigation
+
+   - **`src/gitlore/formatters/report.py`** (new file)
+     - `format_report(result: SynthesisResult) -> str` with HTML comment header (date/commits/review flag)
+
+   - **`src/gitlore/formatters/__init__.py`**
+     - Added `format_report` import and export
+
+   - **`src/gitlore/pipeline.py`**
+     - Added `analysis.classified_comments = classified` before clustering in `_run_comment_pipeline()`
+     - Added `"report": (format_report, "gitlore-report.md")` to formatter_map
+
+   - **`src/gitlore/config.py`**
+     - Default classifier: `openrouter/google/gemini-3-flash-preview` (was `gpt-oss-120b`)
+     - Default output formats: `["report"]` (was `["claude_md", "agents_md"]`)
+     - Template also updated to match
+
+   - **`src/gitlore/cli.py`**
+     - Help text: "Mine git history and PR reviews to generate knowledge reports"
+     - Analyze docstring: "Analyze repository and generate knowledge report"
+     - Dry-run message: "Generated knowledge report:"
+
+   - **`src/gitlore/extractors/github_comments.py`**
+     - Added `comments(first: 30)` to GraphQL QUERY for PR issue comments
+     - Added `_BOT_AUTHORS` frozenset: github-actions, dependabot, renovate, codecov (and [bot] variants)
+     - Added `_BOT_CONTENT_PATTERNS` regex: catches line-count bot tables, stale branch notices, hidden bot markers, coverage reports
+     - `_is_trivial()` now also checks `_BOT_CONTENT_PATTERNS`
+     - `_extract_comments_from_pr()`: new section extracting PR issue comments with bot filtering and thread reply collection
+
+   - **`src/gitlore/classifiers/comment_classifier.py`**
+     - Switched from JSON to XML parsing
+     - Removed `json` import, added `re` import
+     - Added `_CATEGORY_RE = re.compile(r"<category>\s*(\w+)\s*</category>")` and `_CONFIDENCE_RE = re.compile(r"<confidence>\s*(-?[\d.]+)\s*</confidence>")`
+     - Removed `_try_parse_json()`, rewrote `_parse_classification()` to use regex on XML tags — resilient to truncation
+     - Removed `json_mode=True` from LLM call
+     - Removed `few_shot=load_prompt("classifier_few_shot")` from user message formatting
+
+   - **`src/gitlore/prompts/classifier_system.txt`**
+     - Simplified: one-line instruction + category list + 4 few-shot examples using `<comment>` → `<classification>` pattern
+
+   - **`src/gitlore/prompts/classifier_user.txt`**
+     - Simplified to just: `<comment>{comment}</comment>`
+
+   - **`src/gitlore/prompts/classifier_few_shot.txt`** — deleted (no longer needed)
+
+   - **`src/gitlore/synthesis/quality_gate.py`** — deleted (dead code, only consumer of removed Rule class)
+
+   - **`tests/test_synthesis.py`**
+     - `_SAMPLE_LLM_OUTPUT` changed from XML `<gitlore-doc>` to plain markdown
+     - Updated assertions: `sections[0].title == "Review Insights"`, `"error handling" in sections[0].content`
+     - Added tests: `test_synthesize_sets_has_review_data`, `test_synthesize_no_review_data_flag`, `test_synthesize_prompt_mentions_review_data`, `test_synthesize_prompt_git_only_note`, `test_review_patterns_first_in_xml`, `test_review_xml_includes_sample_metadata`, `test_review_xml_includes_thread_comments`, `test_notable_comments_xml`
+
+   - **`tests/test_comment_classifier.py`**
+     - All mock responses changed from JSON to XML format
+     - Added `test_truncated_xml_extracts_categories`, `test_empty_response_returns_defaults`, `test_no_xml_returns_defaults`, `test_whitespace_in_tags`
+     - `test_llm_called_with_correct_params` now asserts `"json_mode" not in call_kwargs.kwargs`
+
+   - **`scripts/test_classifier.py`** (new)
+     - Test script that caches GitHub comments to JSON and runs classifier against them
+     - Accepts model name as CLI argument
+     - Reports success/failure rate and category distribution
+
+   - **`scripts/run_cached.py`** (new)
+     - Runs full pipeline with monkey-patched `_run_comment_pipeline` that uses cached comments from `scripts/tinygrad_comments.json`
+
+   - **`~/dev/projects/tinygrad/gitlore.toml`**
+     - Updated classifier to `openrouter/google/gemini-3-flash-preview`
+
+4. Errors and Fixes:
+   - **F541 f-string without placeholders** in cli.py: Changed `f"\n[bold]Generated knowledge report:[/bold]\n"` to regular string
+   - **I001 import sorting** in models.py and synthesizer.py: Fixed blank line and alphabetical order of imports
+   - **mypy error in quality_gate.py** after removing Rule: Deleted the dead file entirely
+   - **Confidence regex didn't match negatives**: `_CONFIDENCE_RE` pattern `[\d.]+` missed `-0.3`. Fixed to `(-?[\d.]+)`
+   - **Only 16 comments from tinygrad**: GraphQL query only fetched `reviewThreads`. Tinygrad uses PR issue `comments` for reviews. Fixed by adding `comments(first: 30)` to query + bot filtering
+   - **gpt-oss-120b 76-89% failure rate**: Model returned empty/whitespace-only responses consuming 100 tokens. Tried JSON salvaging first, then switched to XML format, then tried different models. Gemini 3 Flash Preview achieved 100% success rate
+   - **User corrected model choice**: "gemini 2??? we use gemini 3 flash preview brother." — user explicitly requested `openrouter/google/gemini-3-flash-preview`
+   - **Config override not picked up**: First tinygrad run used default model because `--config` wasn't passed. Fixed by explicitly passing `--config ~/dev/projects/tinygrad/gitlore.toml`
+   - **tinygrad gitlore.toml still had old classifier**: Even after changing default in config.py, the explicit toml file still said gpt-oss-120b. Fixed by editing the toml
+
+5. Problem Solving:
+   - Diagnosed GitHub comment extraction gap by querying the API directly and comparing `reviewThreads` (1 total) vs `comments` (7 human) across 25 PRs
+   - Diagnosed classifier failures by analyzing token counts: 116/120 failures had exactly 100 output tokens — model was padding with whitespace before producing JSON
+   - Tested 3 classifier models systematically: gpt-oss-120b (11%), gemini-2.0-flash (69% but wrong format), gemini-3-flash-preview (100%)
+   - Identified synthesizer laziness: only 3 turns, doesn't investigate programmatic context despite having 50 turns available and 7 git tools
+
+6. All User Messages:
+   - "Implement the following plan: [detailed plan for shifting output from config files to knowledge reports]"
+   - "can you run a test with the last 3 months of tinygrad pr comments?"
+   - "pls move it from temp to a more permanent location."
+   - "and what was the output? from the agent."
+   - "only 16 comments? bro i see at least 50 that were merged the last 2 days."
+   - "lets use xml instead of json."
+   - "maybe the prompt isnt good enough either tbh."
+   - "now can we run it again? at least only the parsing part... and lets cache results so that we dont abuse the gh api"
+   - "gemini 2??? we use gemini 3 flash preview brother."
+   - "sure." (re: updating default classifier)
+   - "now lets rerun. can we use the cache we already had?"
+   - "and let's generally add caching to this."
+   - "and what was the output? from the agent." (asking to see the report)
+   - "how many steps did the synethesizer take?"
+   - "i think its a bit confused on what the expectations are + i think, it should be utilizing the other programmatic context a bit more. it doesnt feel like it does. on top of all that. i thikn we need to cahce the llm-filtered per pr comment thingy as well. keep it all in a db. we were supposed to use embedding too no? do we?"
+   - "ok. lets rerun using gemini 3 as the thingy thing and see what it has to say."
+   - "how many steps did the synethesizer take?" (second time)
+   - "pls before applying the plan, write the readme. make it more about what this does as opposed to tehcnical. brief and to the point. dont write like ai slop. no emojis or overformatting 3-5 sentences, some formatting like paragraphs and titels."
+
+7. Pending Tasks:
+   - **Write README.md** — draft is in the plan file, needs to be written to disk after plan approval
+   - **Implement SQLite cache** (`src/gitlore/cache.py`) — 3 tables: comments (with TTL), classifications (model+body key), embeddings (model+text key)
+   - **Wire cache into pipeline** — pipeline.py, comment_classifier.py, semantic.py
+   - **Strengthen synthesis prompt** — push agent to actually investigate patterns with git tools, use at least 5-10 turns investigating before writing
+   - **Add `--no-cache` CLI flag**
+   - **Write tests** for cache module and cache integration
+
+8. Current Work:
+   Plan mode is active. The user asked to write a README before implementing the SQLite cache plan. A README draft has been written into the plan file at `/home/snek/.claude/plans/eager-stirring-shannon.md`. The plan file now contains both the README content (Step 0) and the SQLite cache + synthesis prompt plan (the previously approved plan). The plan has NOT been exited yet — `ExitPlanMode` was not called because the user's message about writing the README came in while plan mode was being set up.
+
+9. Optional Next Step:
+   Call `ExitPlanMode` to get approval for the README content and the cache plan, then write the README.md file and proceed to implement the SQLite cache + stronger synthesis prompt plan. The user's most recent request was: "pls before applying the plan, write the readme. make it more about what this does as opposed to tehcnical. brief and to the point. dont write like ai slop. no emojis or overformatting 3-5 sentences, some formatting like paragraphs and titels."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/snek/.REDACTED.jsonl
+Please continue the conversation from where we left off without asking the user any further questions. Continue with the last task that you were asked to work on.
+
+---
+
+let's try to run it on tinygrad again.
+
+---
+
+what was the final response?
+
+---
+
+this feels like... an AI summary of pr comments
+
+---
+
+well. its like. it needs to use reviews. but it shouldnt present each pr review separately you know. i just want it to detect patterns using all of it. mostly reviews supported by the patterns.
+
+---
+
+yeah but maybe the report is good. maybe it dont need the context lol...
+
+---
+
+give me the rpoert. i dont see it.
+
+---
+
+good good. but i think both we and the model is confused on what its for. lets think about it
+
+---
+
+all of those can be used. i think moreso for ai assistants and team leads. but it would need further processing. i think we gotta output as a step right before processing for teamlead/ai. how should that look like?
+
+---
+
+xml sounds closer tbh. could even be a nice visual. but i still think the model needs to do a bit more work. lets push the current thing and try doing this.
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+why tf u using igt -c
+
+---
+
+well. not all findings are on the files.
+
+---
+
+another thing... xml is indentation based right. is json too?
+
+---
+
+ha ok. lets use xml then. its better
+
+---
+
+can u make a simple html visualizer? u can delegate an agent to do that
+
+---
+
+how do i use this with sonnet btw.
+
+---
+
+can u generate another html
+
+---
+
+[Request interrupted by user for tool use]
+
+---
+
+no i ran it. just generate the html
+
+---
+
+[Request interrupted by user]
+
+---
+
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Analysis:
+Let me chronologically trace through the conversation to capture all important details:
+
+1. **Session start**: This is a continuation session. The previous conversation covered a major refactor (shifting output from config files to knowledge reports), fixing GitHub extractor, switching classifier from JSON to XML, testing against tinygrad, and creating a plan for SQLite cache + stronger synthesis prompt.
+
+2. **Plan approval and README**: The plan was already written. I read existing files, finalized the plan, and called ExitPlanMode. User approved.
+
+3. **User asked to commit and push first**: Before implementing the plan, user wanted to commit and push the existing work (refactor + README). I committed all the refactored files and README as "refactor: shift output from config files to knowledge reports" and pushed.
+
+4. **Implemented SQLite cache**: Created `src/gitlore/cache.py` with 3 tables (comments, classifications, embeddings). Wired it into:
+   - `comment_classifier.py` — cache check before LLM, store after
+   - `clustering/semantic.py` — cache check before embedding API, store after
+   - `pipeline.py` — creates Cache instance, checks for cached comments before GitHub fetch
+
+5. **Added --no-cache CLI flag**: Added to cli.py analyze command.
+
+6. **Strengthened synthesis prompt**: Rewrote `synthesis_system.txt` with explicit tool usage instructions per pattern type.
+
+7. **Tests**: Created `tests/test_cache.py` (15 tests), added 3 cache hit/miss tests to `test_comment_classifier.py`.
+
+8. **Lint fixes**: Removed unused `vecs` variable in test_cache.py, removed unused `ClassifiedComment` import, fixed I001 import ordering in test_comment_classifier.py.
+
+9. **User said "commit and push after youre done with the readme"**: I committed and pushed before implementing cache. Then after implementing cache, the user said to commit and push.
+
+10. **First tinygrad test run with cache**: Ran successfully. 552 commits, cache populated (1 comment set, 150 classifications, 150 embeddings). Synthesizer took 17 turns. Report was detailed but user said "this feels like... an AI summary of pr comments".
+
+11. **User feedback on report quality**: User said it reads like an AI summary of PR comments, not actual pattern detection. They wanted patterns detected across all data, mostly reviews supported by patterns.
+
+12. **Prompt rewrite for pattern focus**: Rewrote synthesis_system.txt with:
+   - "Organize by insight, not by data source"
+   - "Do NOT present individual PRs as separate items"
+   - "Section headers should name the actual pattern"
+   - Removed "PR review data is the headline"
+
+13. **Second tinygrad run**: Better structure, sections like "CI Reliability and Process Replay Regressions", "Toolchain & Hardware-Specific Landmines". But still only 7 tool calls (all Read, zero show_commit/blame_range/file_history).
+
+14. **User said "maybe the report is good. maybe it dont need the context lol"**: Accepted that the report quality was acceptable even without deep git tool investigation.
+
+15. **User asked for the report**: I displayed it clean.
+
+16. **User: "good good. but i think both we and the model is confused on what its for. lets think about it"**: Led to a discussion about what the report is FOR. Three possible audiences: AI assistants, new devs, team leads.
+
+17. **User: "all of those can be used... it would need further processing... how should that look like?"**: Discussed the intermediate structured format. I proposed a Finding schema with category, severity, files (optional), evidence, insight.
+
+18. **User: "well. not all findings are on the files."**: Pointed out conventions/tooling findings don't have files. I agreed files should be optional.
+
+19. **User: "another thing... xml is indentation based right. is json too?"**: I clarified neither is indentation-based, both use explicit delimiters. YAML is indentation-based.
+
+20. **User: "ha ok. lets use xml then. its better"**: Decided on XML output format for findings.
+
+21. **Committed and pushed cache + prompt changes**: "feat: add sqlite cache and strengthen synthesis prompt"
+
+22. **Implemented structured XML findings**:
+    - Added `Finding`, `FindingCategory`, `FindingSeverity`, `EvidencePoint` to models.py
+    - Removed `SynthesisSection`, changed `SynthesisResult` to hold `findings` and `raw_xml` instead of `content` and `sections`
+    - Added `content` property to SynthesisResult for backward compat with old formatters
+    - Rewrote synthesis prompt output section to specify XML format
+    - Replaced markdown parser with XML findings parser in synthesizer.py
+    - Updated report formatter to render findings grouped by category
+    - Updated CLI dry-run to use format_report()
+    - Updated all tests (test_formatters.py, test_synthesis.py)
+
+23. **Third tinygrad run**: 8 findings, properly structured by category. Output showed grouped findings under Fragile Areas, Landmines, Architecture, Code Patterns, Conventions, Tooling.
+
+24. **User: "can u make a simple html visualizer? u can delegate an agent to do that"**: Spawned agent to create HTML formatter. Agent created:
+    - `src/gitlore/formatters/html.py` — standalone HTML with dark theme, category grouping, severity badges
+    - Wired into `__init__.py` and `pipeline.py` formatter_map
+    - Added TestHtml tests to test_formatters.py
+
+25. **Generated HTML from tinygrad findings**: Used log parsing to extract findings XML and generate HTML. Opened in browser.
+
+26. **User: "how do i use this with sonnet btw."**: I explained setting `synthesizer = "openrouter/anthropic/claude-sonnet-4-5-20250929"` in gitlore.toml.
+
+27. **User: "can u generate another html"**: I tried to run the full pipeline but user interrupted — they already ran it themselves. They just wanted me to generate the HTML from the log.
+
+28. **Failed to find findings in log**: The log was overwritten by the new sonnet run. Searched for `<finding` in the log — no matches found. This means either the sonnet run didn't output proper XML findings, or the log format doesn't capture the raw output in a way that my regex can find.
+
+29. **User interrupted and asked for summary**.
+
+Key issues to track:
+- The sonnet run's output needs to be investigated — did it produce valid `<findings>` XML?
+- The HTML generation from log is a hack — maybe need a better way to persist findings
+- The user changed tinygrad/gitlore.toml to use sonnet already
+- Current working directory is `/home/snek/dev/projects/tinygrad`
+- There are uncommitted changes in the gitlore repo (the XML findings format, HTML formatter, etc.)
+
+Summary:
+1. Primary Request and Intent:
+   The user is building `gitlore`, a CLI tool that mines git history and PR reviews to produce structured findings about codebases. This session covered:
+   - Committing and pushing existing refactored code (report output format, classifier XML switch, GitHub extractor improvements)
+   - Implementing SQLite caching for GitHub comments, LLM classifications, and embeddings
+   - Strengthening the synthesis prompt to push the agent to investigate patterns with git tools
+   - Iterating on report quality based on user feedback ("feels like AI summary of PR comments" → "organize by insight, not by data source")
+   - Pivoting from freeform markdown output to structured XML findings (`<findings>` with `<finding>` elements containing category, severity, title, files, evidence, insight)
+   - Creating an HTML visualizer for the findings (delegated to agent)
+   - Testing with Claude Sonnet as synthesizer instead of Gemini Flash
+   - User's last request: generate HTML from the latest sonnet run's findings (failed because log didn't contain parseable findings XML)
+
+2. Key Technical Concepts:
+   - SQLite caching with 3 tables: comments (TTL-based), classifications (sha256 key, no TTL), embeddings (sha256 key, binary blob)
+   - Structured XML findings format replacing freeform markdown synthesis output
+   - Finding model: title, category (6 types), severity (3 levels), insight, evidence points (source + text), files (optional)
+   - `SynthesisResult.content` property for backward compatibility with old formatters
+   - Report formatter groups findings by category in display order
+   - HTML formatter: standalone dark-theme HTML with embedded CSS, no JS
+   - Cache wired into pipeline, classifier, and clustering modules
+   - `--no-cache` CLI flag (skips reads, still writes)
+   - Agent SDK synthesis with structured XML output format
+
+3. Files and Code Sections:
+
+   - **`README.md`** — New project README. Brief, non-AI-slop description of what gitlore does.
+     ```
+     # gitlore
+     gitlore mines your git history and PR reviews to produce a knowledge report...
+     ```
+
+   - **`src/gitlore/cache.py`** — NEW. SQLite cache module with 3 tables.
+     ```python
+     class Cache:
+         def __init__(self, repo_path: str) -> None:  # opens .gitlore/cache.db
+         def get_comments(self, owner, repo, max_age_hours=24) -> list[ReviewComment] | None
+         def set_comments(self, owner, repo, comments) -> None
+         def get_classification(self, model, body) -> tuple[list[str], float] | None
+         def set_classification(self, model, body, categories, confidence) -> None
+         def get_embeddings(self, model, texts) -> list[list[float]] | None
+         def set_embeddings(self, model, texts, vectors) -> None
+     ```
+
+   - **`src/gitlore/models.py`** — Added Finding-related dataclasses, changed SynthesisResult:
+     ```python
+     class FindingCategory(Enum):
+         CODE_PATTERN = "code_pattern"
+         CONVENTION = "convention"
+         ARCHITECTURE = "architecture"
+         LANDMINE = "landmine"
+         TOOLING = "tooling"
+         FRAGILE_AREA = "fragile_area"
+
+     class FindingSeverity(Enum):
+         HIGH = "high"
+         MEDIUM = "medium"
+         LOW = "low"
+
+     @dataclass
+     class EvidencePoint:
+         source: str
+         text: str
+
+     @dataclass
+     class Finding:
+         title: str
+         category: FindingCategory
+         severity: FindingSeverity
+         insight: str
+         evidence: list[EvidencePoint] = field(default_factory=list)
+         files: list[str] = field(default_factory=list)
+
+     @dataclass
+     class SynthesisResult:
+         findings: list[Finding] = field(default_factory=list)
+         raw_xml: str = ""
+         analysis: AnalysisResult | None = None
+         has_review_data: bool = False
+         model_used: str = ""
+         total_tokens: int = 0
+
+         @property
+         def content(self) -> str:
+             """Render findings as markdown for formatters that consume plain text."""
+             ...
+     ```
+     - `SynthesisSection` kept but no longer used by SynthesisResult (may be dead code now)
+
+   - **`src/gitlore/synthesis/synthesizer.py`** — Major changes:
+     - Replaced markdown `_normalize_agent_output()` with `_parse_findings_xml()` using regex parsing
+     - Updated `synthesize()` to return findings instead of content/sections
+     - Key parsing regexes: `_FINDINGS_RE`, `_FINDING_RE`, `_ATTR_RE`, `_POINT_RE`, `_FILE_RE`
+     - Changed user prompt from "Synthesize a knowledge report" to "Analyze this codebase"
+
+   - **`src/gitlore/prompts/synthesis_system.txt`** — Rewritten multiple times:
+     - First rewrite: added explicit tool usage instructions per pattern type
+     - Second rewrite: "organize by insight, not by data source", "do NOT present individual PRs as separate items"
+     - Third rewrite: XML output format specification with `<findings>` schema, example, and rules
+     - Final version specifies: categories, severity levels, evidence with source attribution, 8-20 findings target
+
+   - **`src/gitlore/classifiers/comment_classifier.py`** — Added optional `Cache` parameter:
+     - `_classify_one()` checks cache before LLM call, stores result after
+     - `classify_comments()` passes cache through
+
+   - **`src/gitlore/clustering/semantic.py`** — Added optional `Cache` for embeddings:
+     - `_get_embeddings()` checks cache first, stores after API call
+     - `cluster_comments()` passes cache through
+
+   - **`src/gitlore/pipeline.py`** — Creates Cache instance, wires it through:
+     - `run_pipeline()` accepts `use_cache` param
+     - `_run_comment_pipeline()` creates Cache, checks for cached comments before GitHub fetch, passes cache to classify and cluster
+
+   - **`src/gitlore/cli.py`** — Added `--no-cache` flag, updated dry-run to use `format_report()`
+
+   - **`src/gitlore/formatters/report.py`** — Rewritten to render structured findings grouped by category
+     ```python
+     _CATEGORY_ORDER = [FRAGILE_AREA, LANDMINE, ARCHITECTURE, CODE_PATTERN, CONVENTION, TOOLING]
+     def format_report(result: SynthesisResult) -> str: ...
+     ```
+
+   - **`src/gitlore/formatters/html.py`** — NEW. Created by delegated agent. Standalone HTML with dark theme, severity badges, category grouping.
+
+   - **`src/gitlore/formatters/__init__.py`** — Added `format_html` import
+
+   - **`tests/test_cache.py`** — NEW. 15+ tests covering CRUD, TTL, roundtrips, partial misses
+
+   - **`tests/test_comment_classifier.py`** — Added 3 cache tests (hit skips LLM, miss calls LLM and stores, None cache still works)
+
+   - **`tests/test_synthesis.py`** — Rewrote `_SAMPLE_LLM_OUTPUT` from markdown to XML findings format, updated all assertions
+
+   - **`tests/test_formatters.py`** — Rewrote `sample_synthesis` fixture to use Finding objects instead of `content=`, added TestHtml class
+
+   - **`~/dev/projects/tinygrad/gitlore.toml`** — User changed synthesizer to `openrouter/anthropic/claude-sonnet-4-5-20250929`
+
+4. Errors and Fixes:
+   - **`git -C` usage**: User got annoyed when I used `git -C /home/snek/dev/projects/gitlore` — "why tf u using git -C". Working directory context should be maintained naturally. Fixed by using `cd` to get back to gitlore directory.
+   - **Wrong working directory**: After running tinygrad test, cwd was tinygrad. `git add` failed with "pathspec did not match". Fixed with `cd /home/snek/dev/projects/gitlore &&`.
+   - **`SynthesisResult.__init__() got unexpected keyword argument 'content'`**: After removing `content` field from SynthesisResult, test_formatters.py broke. Fixed by rewriting fixture to use `findings=` and adding `content` as a property.
+   - **Unused `vecs` variable in test_cache.py**: Lint error F841. Removed the line.
+   - **Unused `ClassifiedComment` import in test_comment_classifier.py**: Lint error F401. Removed import.
+   - **I001 import sorting in test_comment_classifier.py**: Extra blank line between imports and comment. Removed one blank line.
+   - **HTML generation from log failed**: After sonnet run, `re.finditer(r'<findings>.*?</findings>', log, re.DOTALL)` found no matches. The sonnet run's log may not contain the findings XML in a parseable format, or the output didn't contain valid `<findings>` XML.
+
+5. Problem Solving:
+   - **Report quality iteration**: Three rounds of prompt refinement based on user feedback. First report was "AI summary of PR comments". Second was better-structured but still PR-centric. Third used structured XML findings which the user accepted.
+   - **Cache verification**: Confirmed cache works — 150 classifications and 150 embeddings cached, second run instant for classify/embed.
+   - **Synthesizer investigation depth**: Checked tool usage in logs. Gemini Flash only does Read calls (no show_commit, blame_range, file_history). User accepted this: "maybe the report is good. maybe it dont need the context lol"
+   - **Findings not found in sonnet log**: The last issue before summary request. The log either doesn't capture the final output in a way the regex can find, or sonnet didn't produce valid `<findings>` XML.
+
+6. All User Messages:
+   - "before doing anything tho. commit and push. after youre done with the readme."
+   - "why tf u using git -c" (annoyed at git -C usage)
+   - "let's try to run it on tinygrad again."
+   - "what was the final response?"
+   - "this feels like... an AI summary of pr comments"
+   - "well. its like. it needs to use reviews. but it shouldnt present each pr review separately you know. i just want it to detect patterns using all of it. mostly reviews supported by the patterns."
+   - "give me the rpoert. i dont see it."
+   - "good good. but i think both we and the model is confused on what its for. lets think about it"
+   - "all of those can be used. i think moreso for ai assistants and team leads. but it would need further processing. i think we gotta output as a step right before processing for teamlead/ai. how should that look like?"
+   - "well. not all findings are on the files."
+   - "another thing... xml is indentation based right. is json too?"
+   - "ha ok. lets use xml then. its better"
+   - "can u make a simple html visualizer? u can delegate an agent to do that"
+   - "how do i use this with sonnet btw."
+   - "can u generate another html"
+   - "no i ran it. just generate the html" (interrupted my attempt to run the full pipeline)
+
+7. Pending Tasks:
+   - Commit and push the XML findings format changes + HTML formatter (uncommitted in gitlore repo)
+   - Generate HTML from the sonnet run's findings (failed — need to investigate why findings XML wasn't found in log)
+   - Update MEMORY.md with new architecture decisions (XML findings format, SynthesisResult changes)
+
+8. Current Work:
+   User ran gitlore on tinygrad with sonnet as synthesizer. They asked me to generate the HTML report from that run's output. I attempted to parse the `.gitlore.log` file for `<findings>` XML but found no matches. The search `Grep pattern=<finding path=.gitlore.log` returned 0 matches. This was interrupted by the summary request.
+
+   The gitlore repo has uncommitted changes: XML findings format (models.py, synthesizer.py, synthesis_system.txt, report.py, cli.py), HTML formatter (html.py, __init__.py, pipeline.py), and updated tests.
+
+9. Optional Next Step:
+   Investigate why the sonnet run's log doesn't contain `<findings>` XML. The user said "no i ran it. just generate the html" — they ran the pipeline with sonnet themselves and want the HTML output. Need to either:
+   1. Check if the sonnet run produced valid findings (maybe it output prose instead of XML, or the log format doesn't capture it)
+   2. Find another way to access the sonnet run's output (maybe check if a report file was written, or re-examine the log format)
+   3. If findings aren't in the log, may need to re-run or find the output elsewhere
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /home/snek/.REDACTED.jsonl
+
+---
+
+can u compare these two: 
+
+
+
+gitlore Report
+Generated 2026-02-16 552 commits analyzed with PR review data
+!!
+Fragile Areas
+(1)
+CI Process Replay and LVP/Process-Replay reliability
+high
+The process replay tool, which ensures PRs don't regress kernel performance or correctness by comparing output bits/source, is sensitive to changes in renderer logic. Non-deterministic crashes in dtypes (e.g. on RDNA4) and hangs in CI suggest that this area is prone to breakage during core refactors.
+reverts: Multiple reverts (e.g., #14627, #13875) related to renderer and compiler rewrites, often triggered by CI failures.
+**
+Landmines
+(1)
+Hardware-specific compiler and toolchain quirks (AMD/CUDA)
+medium
+Compilers (ptxas, llvm-amdgcn) often have version-specific or architecture-specific bugs that tinygrad must work around or account for in its tests. This makes hardware-specific backends "landmines" where code that passes on one version or GPU might fail mysteriously on another.
+##
+Architecture
+(2)
+Unified Optimization (Opt) and UOp-centric design
+high
+The codebase is transitioning towards a pure UOp-based representation for everything from high-level lazy buffers to low-level assembly generation. Most optimizations (UPCAST, UNROLL, TC) are expressed as structured transformations on this graph, allowing for a unified beam search over the action space.
+code: tinygrad/uop/ops.py and tinygrad/codegen/opt/__init__.py show a tight coupling where Kernel optimization (OptOps) maps directly to the UOp graph structure.
+code: The beam search in tinygrad/codegen/opt/search.py operates on the Scheduler which relies on the UOp toposort and keying for caching.
+Multi-device sharded execution and Tensor Core partitioning
+medium
+The codebase handles multi-GPU through Ops.MULTI and explicit sharding. However, scheduling multi-device kernels interacts with the SCACHE in subtle ways; if not handled carefully, one device's optimized schedule might be incorrectly applied to another, leading to performance or correctness issues.
+<>
+Code Patterns
+(1)
+Aggressive kernel caching and BEAM search overhead
+high
+Optimization (BEAM search) is expensive, so the codebase relies heavily on the Schedule Cache (SCACHE) and Beam Cache. Changes that invalidate these caches (like lazy assignment chains) significantly regress startup/scheduling time. Developers must be careful not to trigger redundant recomputations of the graph during the scheduling phase.
+~~
+Conventions
+(2)
+Test-driven development for hardware regressions
+medium
+There is a strong cultural requirement to demonstrate a bug or a missing feature with a failing test in CI before the fix is merged. This "fix-with-test" pattern is strictly enforced by maintainers to prevent regressions in a codebase that supports many diverse hardware backends.
+Minimize diff noise for maintainability
+low
+Maintainers prioritize readability and "minimal diffs" to keep the tiny codebase clean. PRs that bundle functional changes with cleanup or whitespace are frequently rejected or requested to be split, as they obscure the core logic changes.
+=>
+Tooling
+(1)
+PMA and VIZ for kernel debugging
+medium
+VIZ=1 and PMA=1 (likely Process Memory Analyzer or similar) are primary tools for debugging kernel generation and memory usage. When these debug tools break, it is considered a high-priority issue because it blocks hardware-level optimization and disassembly verification.
+  
+Generated knowledge report:
+
+<!-- Generated by gitlore on 2026-02-16 | 552 commits analyzed | with PR review data -->
+
+## Fragile Areas
+
+### Renderer and compiler coupling causes CI failures
+
+Renderer and compiler classes are structurally coupled. Changes to rendering logic cascade into compiler
+behavior, causing CI failures (especially process replay) that are hard to predict from the diff alone. 
+The architecture of passing compiler instances through renderer constructors creates tight coupling that
+makes refactoring fragile.
+
+**Files:** `tinygrad/renderer/cstyle.py`, `tinygrad/runtime/support/compiler_cuda.py`, 
+`tinygrad/renderer/ptx.py`
+
+- *reverts:* 3 reverts of renderer refactors: #14627 (NV/CUDA renderers), #14188 (dtype_supported), 
+#13646 (renderer/compiler rewrites)
+- *code:* CUDARenderer and NVRTCCompiler are tightly coupled - renderer creates compiler instances in 
+__init__
+- *reviews:* Process replay failures flagged across multiple renderer PRs
+- *reviews:* PR #14046: CUDA disassembly breaks on CUDA 13.1 with specific nvdisasm versions
+
+### Process replay is a gatekeeper for refactors
+
+Process replay compares generated kernels between master and PR branches. It's the primary gatekeeper 
+for refactors and speedup PRs. When it fails, developers often can't explain why, suggesting the system 
+is sensitive to subtle changes. The 20% early-stop threshold means large refactors can silently skip 
+validation.
+
+- *reviews:* 17 review comments about CI reliability, process replay failures, and workflow debugging
+- *reviews:* PR #14554: "was process replay getting in the way? like showing red without putting 
+explicit pr or taking too long?"
+- *reviews:* PR #13998: "no idea why process replay fails for mac, but this is more correct"
+- *code:* Process replay early stops when over 20% of kernels change for speed
+- *code:* PRs with  in title must pass process replay assertions
+
+### Lazy assign chains trigger full recomputation without cache hits
+
+When all assigns in a chain are lazy (not realized), the scheduler cache misses and recomputes the 
+entire chain every time. This was introduced when assign semantics changed to be lazy by default. The 
+performance impact is proportional to chain length and shows up as scheduling slowdown, not kernel 
+execution time.
+
+**Files:** `tinygrad/engine/schedule.py`
+
+- *reviews:* PR #14688: "a bit slower to schedule because the's no schedule cache hit when all assigns 
+are lazy. it just recomputes all previous assign!"
+- *git:* 15 assign-related commits in past 3 months (recursive resolve, eliminate self-assigns, metadata
+loss)
+- *code:* Assign operations changed from realize_assign to lazy evaluation
+
+### Flaky tests are skipped rather than fixed
+
+Flaky tests are pragmatically skipped rather than debugged and fixed. The team prioritizes CI stability 
+over test coverage. With 548 skipped tests, there's significant untested code. Flakiness often 
+correlates with hardware-specific timing issues (Mac process replay, AMD emulator).
+
+- *reviews:* PR #14350: "these failed locally quite reliably, still skip for now to make CI flaky"
+- *code:* 548 @unittest.skip decorators across 108 test files
+- *code:* Commit 32980c7: "hotfix: skip flaky tests, looped many times on tinymac3"
+
+## Landmines
+
+### Scheduler cache must be manually disabled for certain multi-device patterns
+
+The scheduler cache (SCACHE) can return incorrect schedules for multi-device tensors because the cache 
+key doesn't distinguish device contexts. If two devices schedule the same AST, the second will reuse the
+first's schedule. This causes silent correctness bugs in distributed training. The fix is 
+Context(SCACHE=0), but this isn't discoverable.
+
+**Files:** `tinygrad/engine/schedule.py`
+
+- *reviews:* PR #14482: "SCACHE needs to be disabled otherwise whatever is scheduled first will be the 
+schedule used for both"
+- *reviews:* PR #14688: "a bit slower to schedule because the's no schedule cache hit when all assigns 
+are lazy. it just recomputes all previous assign!"
+- *code:* Commit 14574c6 adds SCACHE ContextVar to disable scheduler cache
+- *code:* Schedule cache keyed on AST, doesn't account for device-specific scheduling differences
+
+### BEAM search tensor core optimization was silently broken
+
+BEAM search's upcast limiting logic for tensor cores was broken - tc_up was always 1 instead of the 
+actual tensor core upcast size. This caused BEAM to reject valid tensor core kernels, silently degrading
+performance on hardware with tensor cores. The bug went undetected because BEAM timeouts/failures are 
+common and not well-signaled.
+
+**Files:** `tinygrad/codegen/opt/search.py`
+
+- *reviews:* PR #13438: "tensor_core is missing from Scheduler cause tc_up always be 1"
+- *code:* Commit 2472332 fixes tc_up calculation: prod(tc.dims)//tc.threads was always evaluating to 1
+- *reviews:* PR #13439: BEAM required to get >500 TFLOPS on mi350x with tensor cores
+
+## Architecture
+
+### Scheduler cache architecture and multi-device scheduling
+
+The scheduler caches schedules by AST key to avoid recomputation. The cache normalizes ASTs via 
+graph_rewrite before keying. However, the cache doesn't distinguish device-specific scheduling, causing 
+multi-device bugs. Recent work has focused on assign chains, PARAM nodes, and rangeify - suggesting the 
+schedule is under active refactoring.
+
+**Files:** `tinygrad/engine/schedule.py`
+
+- *code:* Schedule cache key based on AST after graph_rewrite for cache normalization
+- *code:* SCACHE ContextVar added in commit 14574c6 to allow disabling cache
+- *git:* 20+ commits in past 3 months touching schedule.py: PARAM nodes, rangeify, var_vals
+
+### Hardware-specific test architecture with MockGPU emulation
+
+tinygrad tests GPU kernels without hardware using MockGPU emulation. The NULL backend combined with 
+EMULATE=AMD_CDNA4 allows testing assembly-level correctness. This architecture enables CI testing of 
+multiple GPU architectures (RDNA3/4, CDNA) without requiring physical hardware.
+
+- *code:* MOCKGPU env var enables emulated GPU execution on NULL backend
+- *code:* RDNA3, RDNA4, CDNA4 emulators run test_ops and test_dtype in CI
+- *git:* Recent commits add emulator tests to CI for AMD architectures without hardware
+
+## Code Patterns
+
+### Toolchain-specific compilation bugs require version-specific debugging
+
+CUDA compilation errors often depend on specific toolkit versions (nvrtc, ptxas, nvdisasm). The team 
+debugs by asking contributors to post exact version strings. Example: PTX disassembly broke in CUDA 13.1
+due to string_at() not stripping null terminators. These bugs are environmental and hard to catch in CI.
+
+**Files:** `tinygrad/runtime/support/compiler_cuda.py`
+
+- *reviews:* 10 review comments debugging CUDA toolkit version incompatibilities
+- *reviews:* PR #14046: PTX rendering breaks on CUDA 13.1, works on 12.8 - requires string buffer null 
+terminator fix
+- *reviews:* Multiple exchanges comparing nvdisasm and ptxas versions to reproduce bugs
+
+### BEAM search uses multiprocessing pool for parallel compilation
+
+BEAM search parallelizes kernel compilation using multiprocessing spawn context. Workers are isolated: 
+they can't open devices and ignore ctrl-c. Compilation timeouts are enforced with SIGALRM. This 
+architecture explains why BEAM is fast but also why it can silently fail or hang - timeout exceptions 
+are caught and logged only at DEBUG>=2.
+
+**Files:** `tinygrad/codegen/opt/search.py`
+
+- *code:* BEAM spawns worker pool with multiprocessing.cpu_count() for CUDA/AMD/NV/METAL/HIP
+- *code:* Workers ignore SIGINT and disable device usage to avoid opening devices in subprocesses
+- *code:* BEAM_TIMEOUT_SEC (default 10s) per compile attempt with SIGALRM
+
+### Bandwidth optimization via dtype and device placement
+
+The team tracks kernel-level bandwidth and execution time. Reviewers question dtype conversions and 
+device transfers for bandwidth impact. Small regressions (300µs) in benchmarks are noticed and 
+investigated. Compile caching (compile_cached) is expected for production paths to avoid startup 
+overhead.
+
+- *reviews:* PR #14677: "is scheduler smart enough to move float after the to to save bandwidth?" - 4 
+bytes vs 2 bytes
+- *reviews:* PR #14723: "can you use compile_cached? startup time is slower rn"
+- *reviews:* Performance benchmarking via version comparisons: "0.10.1 driving vision 16.8ms -> 16.5ms"
+
+## Conventions
+
+### Push failing test first to prove regression in CI
+
+The team enforces test-first debugging: when fixing a bug, commit the failing test first to prove the 
+regression exists in CI, then fix it. This prevents "fix" PRs that don't actually reproduce the original
+problem and ensures CI validates the issue before the fix is merged.
+
+- *reviews:* Reviewers consistently require demonstrating the regression in CI before any fix lands (17 
+review comments)
+- *reviews:* PR #14622: "pushing failing test first so it shows up as a CI failure"
+- *reviews:* PR #14191: "don't just skip the test, like how can a reviewer know if it's indeed failing 
+or not just by reviewing the pr"
+- *code:* Test files show pattern of "add failing test" commits followed by fix commits
+
+### Minimize diff noise by separating formatting from functional changes
+
+The team strongly enforces separating formatting changes from functional changes. Even indentation 
+changes that preserve semantics (wrapping code in if/else) make PRs difficult to review and are 
+rejected. GitHub's "ignore whitespace" diff view doesn't solve this - reviewers want clean, minimal 
+diffs.
+
+- *reviews:* 4 review comments about whitespace and formatting making PRs hard to review
+- *reviews:* PR #13478: "Do not merge whitespace changes and other changes"
+- *reviews:* PR #13478: "this contains many whitespace and formatting changes that makes it hard to 
+review, can you minimize the diff?"
+- *code:* README explicitly warns: "All docs and whitespace changes will be closed unless you are a 
+well-known contributor"
+
+### Empirical validation via WandB experiment tracking for model training
+
+For MLPerf and training PRs, reviewers require empirical evidence via WandB experiment logs showing 
+convergence, memory usage, and step times. This is the team's standard of proof for training-related 
+changes - code review alone is insufficient. Links to WandB runs serve as evidence in PR discussions.
+
+- *reviews:* 9 review comments linking to WandB runs to validate model convergence and performance
+- *reviews:* PR #13874: multiple BERT training runs logged to verify fp8 training converges
+- *reviews:* PR #10925: memory usage comparison between OPTIM_DTYPE=float32 vs half with WandB links
+
+### Conditional merging workflow with CI gating
+
+Maintainers push to internal benchmark CI before merging risky changes. If internal CI passes but public
+CI fails, they merge with failing tests commented out. This suggests the public CI (GitHub Actions) is 
+less trusted than internal CI (tinyamd, tinybox hardware).
+
+- *reviews:* 7 review comments about conditional merging based on CI results
+- *reviews:* PR #14771: "pushed to benchmark, will merge if it passes"
+- *reviews:* PR #14773: "the goal is to get #14778 to pass with RDNA4 for the bounty, i'll merge it with
+rdna4 commented out"
+
+### Visual evidence required for UI changes
+
+UI and visualization changes require screenshot evidence. Reviewers won't merge viz changes without 
+seeing the visual impact. This is enforced informally through review culture rather than automated 
+checks.
+
+- *reviews:* 3 review comments with before/after screenshots for viz/UI changes
+- *reviews:* PR #14695: before/after screenshots of viz layout changes
+- *reviews:* PR #14304: screenshot of UI rendering issue
+
+## Tooling
+
+### Test commands and CI workflows
+
+Run tests with `pytest -nauto --durations=20`. Enable process replay capture with 
+CAPTURE_PROCESS_REPLAY=1. Use DEBUG=4 to see generated kernel code, DEBUG=2 for timings. Pre-commit 
+hooks catch most issues before CI.
+
+- *code:* README provides pytest examples: `python3 -m pytest test/` for full suite
+- *code:* Pre-commit hooks run linter, mypy, and subset of tests on every commit
+- *code:* CAPTURE_PROCESS_REPLAY=1 env var captures kernel inputs for replay testing
+- *code:* DEBUG levels 1-7 control verbosity: 4=kernel code, 5=UOps, 7=assembly
+
+Dry run — 17 findings, no files written.
+
+---
+
+how muich of the stuff from sonnet is like.. actual patterns and not "this is whats going on in the repo"
+
+---
+
+thats still good tbh. lets push this.
+
+---
+
+can u update the default toml files and other shit to use sonnet for synth
+
+---
+
+small adjustment. let's have it focus on user patterns as well. would be useful for team leads. not so much for llms

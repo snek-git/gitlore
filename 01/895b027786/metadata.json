@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "01895b027786",
+  "strategy": "manual-commit",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/gitlore/cli.py",
+    "src/gitlore/pipeline.py",
+    "src/gitlore/synthesis/synthesizer.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/01/895b027786/0/metadata.json",
+      "transcript": "/01/895b027786/0/full.jsonl",
+      "context": "/01/895b027786/0/context.md",
+      "content_hash": "/01/895b027786/0/content_hash.txt",
+      "prompt": "/01/895b027786/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 10120,
+    "cache_read_tokens": 1917836,
+    "output_tokens": 2778,
+    "api_call_count": 18
+  }
+}

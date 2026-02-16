@@ -16,8 +16,11 @@ import warnings
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    PermissionResultAllow,
+    PermissionResultDeny,
     ResultMessage,
     TextBlock,
+    ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
     query,
@@ -498,6 +501,40 @@ _MAX_RETRIES = 3
 logging.getLogger("claude_agent_sdk").setLevel(logging.CRITICAL)
 logging.getLogger("claude_agent_sdk._internal").setLevel(logging.CRITICAL)
 
+# ── Tool permission guard ─────────────────────────────────────────────────────
+
+# Write/mutate tools that should never be used
+_BLOCKED_TOOLS = {"Write", "Edit", "NotebookEdit"}
+
+# Bash commands that are destructive or could mutate state
+_DESTRUCTIVE_BASH = re.compile(
+    r"(?:^|\||\&\&|\;|\$\()\s*(?:"
+    r"rm\b|rmdir\b|mv\b|cp\b|chmod\b|chown\b"
+    r"|git\s+(?:push|reset|checkout|restore|clean|branch\s+-[dD]|merge|rebase|commit|add|stash|tag\s+-d)"
+    r"|sudo\b|curl\b.*\|\s*(?:sh|bash)|wget\b.*\|\s*(?:sh|bash)"
+    r"|pip\b|uv\b|npm\b|yarn\b"
+    r"|docker\b|kubectl\b"
+    r"|>\s*\S|>>"  # redirects that write files
+    r"|tee\b"
+    r")",
+    re.MULTILINE,
+)
+
+
+async def _check_tool_permission(
+    tool_name: str, tool_input: dict, context: ToolPermissionContext,
+) -> PermissionResultAllow | PermissionResultDeny:
+    """Allow read-only tools, block destructive ones."""
+    if tool_name in _BLOCKED_TOOLS:
+        return PermissionResultDeny(message=f"Tool {tool_name} is not allowed in synthesis")
+
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        if _DESTRUCTIVE_BASH.search(cmd):
+            return PermissionResultDeny(message=f"Destructive bash command blocked: {cmd}")
+
+    return PermissionResultAllow()
+
 
 async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object = None) -> str:
     """Run the agentic synthesis loop via Claude Agent SDK.
@@ -526,7 +563,7 @@ async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object
             mcp_servers={"git": server},
             allowed_tools=_ALLOWED_TOOLS,
             permission_mode="bypassPermissions",
-            disallowed_tools=["Bash", "Write", "Edit", "NotebookEdit"],
+            can_use_tool=_check_tool_permission,
             max_turns=50,
             cwd=repo_path,
             stderr=_capture_stderr,

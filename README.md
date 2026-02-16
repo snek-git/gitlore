@@ -16,10 +16,18 @@ uv run gitlore init              # create gitlore.toml
 uv run gitlore analyze            # full pipeline
 uv run gitlore analyze --git-only # skip GitHub/LLM, local analysis only
 uv run gitlore analyze --dry-run  # preview without writing files
+uv run gitlore analyze --no-cache # skip cache reads
 ```
 
-Configure models, GitHub repo, and output formats in `gitlore.toml`. Needs an `OPENROUTER_API_KEY` in `.env` and GitHub auth via `gh` CLI or `GITHUB_TOKEN`.
+Or install globally:
+
+```
+uv tool install /path/to/gitlore
+gitlore analyze
+```
+
+Configure models, GitHub repo, and output formats in `gitlore.toml`. Needs an `OPENROUTER_API_KEY` in `.env` (or `~/.config/gitlore/.env`) and GitHub auth via `gh` CLI or `GITHUB_TOKEN`.
 
 ## Output
 
-The primary output is `gitlore-report.md`.
+Default output is `gitlore-report.md` and `gitlore-report.html`. Can also generate AI assistant configs (`claude_md`, `agents_md`, `cursor_rules`, `copilot_instructions`) via the `[output]` section in `gitlore.toml`.

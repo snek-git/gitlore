@@ -19,10 +19,10 @@ uv run gitlore analyze --dry-run  # preview without writing files
 uv run gitlore analyze --no-cache # skip cache reads
 ```
 
-Or install globally:
+Or install globally (`pip install uv` if you don't have it):
 
 ```
-uv tool install /path/to/gitlore
+uv tool install .
 gitlore analyze
 ```
 

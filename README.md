@@ -19,7 +19,7 @@ uv run gitlore analyze --dry-run  # preview without writing files
 uv run gitlore analyze --no-cache # skip cache reads
 ```
 
-Or install globally (`pip install uv` if you don't have it):
+Or install globally (`curl -LsSf https://astral.sh/uv/install.sh | sh` if you don't have uv):
 
 ```
 uv tool install .

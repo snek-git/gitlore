@@ -1,0 +1,29 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "4bede0e53d0d",
+  "strategy": "manual-commit",
+  "branch": "master",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "gitlore.toml.example",
+    "src/gitlore/cli.py",
+    "src/gitlore/config.py",
+    "src/gitlore/pipeline.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/4b/ede0e53d0d/0/metadata.json",
+      "transcript": "/4b/ede0e53d0d/0/full.jsonl",
+      "context": "/4b/ede0e53d0d/0/context.md",
+      "content_hash": "/4b/ede0e53d0d/0/content_hash.txt",
+      "prompt": "/4b/ede0e53d0d/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 59,
+    "cache_creation_tokens": 32619,
+    "cache_read_tokens": 3299785,
+    "output_tokens": 507,
+    "api_call_count": 39
+  }
+}

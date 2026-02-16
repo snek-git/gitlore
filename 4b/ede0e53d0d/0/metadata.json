@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "4bede0e53d0d",
+  "session_id": "2931628a-9cfe-429a-b749-0a91380bec64",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-16T17:49:23.402313558Z",
+  "branch": "master",
+  "checkpoints_count": 3,
+  "files_touched": [
+    "gitlore.toml.example",
+    "src/gitlore/cli.py",
+    "src/gitlore/config.py",
+    "src/gitlore/pipeline.py"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "216c4d3c-df5f-46bb-879a-9e77fbc4874b",
+  "checkpoint_transcript_start": 3039,
+  "transcript_lines_at_start": 3039,
+  "token_usage": {
+    "input_tokens": 59,
+    "cache_creation_tokens": 32619,
+    "cache_read_tokens": 3299785,
+    "output_tokens": 507,
+    "api_call_count": 39
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-16T17:49:19.47970131Z",
+    "agent_lines": 28,
+    "human_added": 2457,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 2485,
+    "agent_percentage": 1.1267605633802817
+  },
+  "transcript_path": ".claude/projects/-home-snek-dev-projects-gitlore/2931628a-9cfe-429a-b749-0a91380bec64.jsonl"
+}

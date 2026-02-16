@@ -1,0 +1,33 @@
+{
+  "cli_version": "0.4.4",
+  "checkpoint_id": "7c952c43d49a",
+  "session_id": "2931628a-9cfe-429a-b749-0a91380bec64",
+  "strategy": "manual-commit",
+  "created_at": "2026-02-16T16:45:49.45130641Z",
+  "branch": "master",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/gitlore/prompts/synthesis_system.txt"
+  ],
+  "agent": "Claude Code",
+  "transcript_identifier_at_start": "144ab839-0bbe-4dff-a5ef-b11b77a680bd",
+  "checkpoint_transcript_start": 2095,
+  "transcript_lines_at_start": 2095,
+  "token_usage": {
+    "input_tokens": 45,
+    "cache_creation_tokens": 18273,
+    "cache_read_tokens": 2933381,
+    "output_tokens": 495,
+    "api_call_count": 25
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-02-16T16:45:46.386124734Z",
+    "agent_lines": 17,
+    "human_added": 2861,
+    "human_modified": 24,
+    "human_removed": 0,
+    "total_committed": 2902,
+    "agent_percentage": 0.5858028945554791
+  },
+  "transcript_path": ".claude/projects/-home-snek-dev-projects-gitlore/2931628a-9cfe-429a-b749-0a91380bec64.jsonl"
+}

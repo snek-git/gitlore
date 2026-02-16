@@ -558,13 +558,13 @@ async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object
                         else:
                             log.debug("  %s", type(block).__name__)
                     # Print agent activity to console
-                    if tool_names:
-                        _print(f"  [{msg_count}] {', '.join(tool_names)}")
-                    elif current_text and not has_tool_use:
-                        preview = current_text[:120].replace("\n", " ").strip()
-                        if len(current_text) > 120:
+                    if current_text:
+                        preview = current_text[:200].replace("\n", " ").strip()
+                        if len(current_text) > 200:
                             preview += "..."
                         _print(f"  [{msg_count}] {preview}")
+                    if tool_names:
+                        _print(f"  [{msg_count}] -> {', '.join(tool_names)}")
                     # Only keep text from messages that don't have tool calls
                     # (intermediate messages are narration, final message is output)
                     if current_text and not has_tool_use:

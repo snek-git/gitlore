@@ -552,7 +552,11 @@ async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object
                         elif isinstance(block, ToolUseBlock):
                             log.debug("  ToolUse: %s(%s)", block.name, block.input)
                             has_tool_use = True
-                            tool_names.append(block.name)
+                            if block.name == "Bash" and isinstance(block.input, dict):
+                                cmd = block.input.get("command", "")
+                                tool_names.append(f"Bash({cmd})")
+                            else:
+                                tool_names.append(block.name)
                         elif isinstance(block, ToolResultBlock):
                             content_preview = str(block.content)[:200] if block.content else "(empty)"
                             log.debug("  ToolResult: %s", content_preview)

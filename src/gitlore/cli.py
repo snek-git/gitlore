@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Annotated
 
@@ -10,6 +11,9 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 from gitlore.config import DEFAULT_CONFIG_TEMPLATE, GitloreConfig
+
+warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
+warnings.filterwarnings("ignore", message="coroutine.*was never awaited")
 
 # Load .env from CWD, then fall back to ~/.config/gitlore/.env
 load_dotenv()

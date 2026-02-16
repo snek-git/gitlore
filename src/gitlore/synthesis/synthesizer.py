@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import re
+import warnings
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -498,13 +499,16 @@ logging.getLogger("claude_agent_sdk").setLevel(logging.CRITICAL)
 logging.getLogger("claude_agent_sdk._internal").setLevel(logging.CRITICAL)
 
 
-async def _run_agent(prompt: str, repo_path: str, model: str) -> str:
+async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object = None) -> str:
     """Run the agentic synthesis loop via Claude Agent SDK.
 
     The agent receives analysis data as its prompt, investigates patterns
     using git tools, then outputs structured guidance content. Retries up to
     _MAX_RETRIES times on transient subprocess/API failures.
     """
+    from typing import Callable
+    _print: Callable[[str], None] = _log_fn if callable(_log_fn) else lambda _: None
+
     _configure_openrouter_env(model)
 
     stderr_lines: list[str] = []
@@ -539,6 +543,7 @@ async def _run_agent(prompt: str, repo_path: str, model: str) -> str:
                 if isinstance(msg, AssistantMessage):
                     has_tool_use = False
                     current_text = ""
+                    tool_names = []
                     for block in msg.content:
                         if isinstance(block, TextBlock):
                             log.debug("  TextBlock (%d chars)", len(block.text))
@@ -546,11 +551,20 @@ async def _run_agent(prompt: str, repo_path: str, model: str) -> str:
                         elif isinstance(block, ToolUseBlock):
                             log.debug("  ToolUse: %s(%s)", block.name, block.input)
                             has_tool_use = True
+                            tool_names.append(block.name)
                         elif isinstance(block, ToolResultBlock):
                             content_preview = str(block.content)[:200] if block.content else "(empty)"
                             log.debug("  ToolResult: %s", content_preview)
                         else:
                             log.debug("  %s", type(block).__name__)
+                    # Print agent activity to console
+                    if tool_names:
+                        _print(f"  [{msg_count}] {', '.join(tool_names)}")
+                    elif current_text and not has_tool_use:
+                        preview = current_text[:120].replace("\n", " ").strip()
+                        if len(current_text) > 120:
+                            preview += "..."
+                        _print(f"  [{msg_count}] {preview}")
                     # Only keep text from messages that don't have tool calls
                     # (intermediate messages are narration, final message is output)
                     if current_text and not has_tool_use:
@@ -565,6 +579,7 @@ async def _run_agent(prompt: str, repo_path: str, model: str) -> str:
                         last_text = msg.result
 
             log.debug("Agent synthesis complete: %d messages, output length=%d", msg_count, len(last_text))
+            _print(f"  Done — {msg_count} messages")
             return last_text
         except Exception as e:
             last_err = e
@@ -589,6 +604,8 @@ async def _run_agent(prompt: str, repo_path: str, model: str) -> str:
 def synthesize(
     analysis: AnalysisResult,
     config: GitloreConfig,
+    *,
+    _log_fn: object = None,
 ) -> SynthesisResult:
     """Run the full synthesis pipeline: filter -> XML -> agent -> parse findings."""
     filtered = _pre_filter_analysis(analysis)
@@ -606,9 +623,11 @@ def synthesize(
         f" {review_note}\n\n{xml_input}"
     )
 
-    raw_output = asyncio.run(
-        _run_agent(user_prompt, config.repo_path, config.models.synthesizer)
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="coroutine.*was never awaited")
+        raw_output = asyncio.run(
+            _run_agent(user_prompt, config.repo_path, config.models.synthesizer, _log_fn=_log_fn)
+        )
     findings = _parse_findings_xml(raw_output)
 
     return SynthesisResult(

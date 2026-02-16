@@ -62,7 +62,7 @@ def run_pipeline(
 
     # ── Synthesis ───────────────────────────────────────────────────────
     _log("Synthesizing findings...")
-    return synthesize(analysis, config)
+    return synthesize(analysis, config, _log_fn=_log)
 
 
 def _run_comment_pipeline(

@@ -1,19 +1,30 @@
 [models]
 classifier = "openrouter/google/gemini-3-flash-preview"
-synthesizer = "openrouter/anthropic/claude-sonnet-4-5-20250929"
 embedding = "openrouter/openai/text-embedding-3-small"
+compressor = "openrouter/anthropic/claude-sonnet-4.6"
 
-[analysis]
+[build]
 since_months = 12
 half_life_days = 180
 min_coupling_confidence = 0.25
 min_coupling_lift = 1.5
 max_files_per_commit = 50
+min_shared_commits = 3
+
+[sources]
+github = true
+docs = true
+
+[query]
+default_format = "summary"
+max_items = 12
+max_tokens = 1200
+semantic = true
 
 [github]
 # token from GITHUB_TOKEN env or `gh auth token`
-owner = "myorg"
-repo = "myproject"
+owner = ""
+repo = ""
 
-[output]
+[export]
 formats = ["report", "html"]

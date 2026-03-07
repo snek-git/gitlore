@@ -1,39 +1,67 @@
 # gitlore
 
-gitlore mines your git history and PR reviews to produce a knowledge report about your codebase. It reads commit patterns, file coupling, churn hotspots, reverts, and fix-after chains from git log, then pulls PR review comments from GitHub and classifies them by theme. The output is a report documenting what your team's actual practices and pain points are, grounded in evidence from the repo itself.
+gitlore builds a local knowledge index from git history, PR review comments, and repo docs, then retrieves task-specific tribal knowledge for humans and coding agents.
+
+The core workflow is:
+
+```bash
+gitlore build
+gitlore context --task "fix flaky retries" --files src/client.py
+gitlore export --format agents_md,claude_md
+gitlore mcp
+```
 
 ## How it works
 
-The tool runs two branches of analysis. Branch A is purely local: it parses git log output to find hotspot files, co-change coupling between files, revert chains, fix-after patterns, and commit conventions. No network or LLM calls needed. Branch B fetches merged PR review comments from GitHub's GraphQL API, classifies each one with an LLM, embeds them, and clusters similar comments together to surface recurring themes.
+`gitlore build` mines repository history into typed facts:
 
-Both branches feed into an agentic synthesis step where an LLM investigates the patterns using read-only git tools (blame, file history, diffs) and writes the final report.
+- stable rules from conventions and docs
+- situational guidance from hotspots, coupling, hub files, and review themes
+- historical examples from reverts and fix-after chains
+- test associations and related files from co-change data
+
+Those facts are stored in `.gitlore/index.db`. `gitlore context` ranks them against a task, file list, and optional diff, then returns a bounded context bundle. No live LLM call is required by default.
 
 ## Install
 
-```
-curl -LsSf https://astral.sh/uv/install.sh | sh  # if you don't have uv
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install .
-```
-
-## Usage
-
-```
-gitlore init              # create gitlore.toml
-gitlore analyze            # full pipeline
-gitlore analyze --git-only # skip GitHub/LLM, local analysis only
-gitlore analyze --dry-run  # preview without writing files
-gitlore analyze --no-cache # skip cache reads
 ```
 
 For development:
 
-```
+```bash
 uv sync --all-extras
-uv run gitlore analyze
 ```
 
-Configure models, GitHub repo, and output formats in `gitlore.toml`. Needs an `OPENROUTER_API_KEY` in `.env` (or `~/.config/gitlore/.env`) and GitHub auth via `gh` CLI or `GITHUB_TOKEN`.
+## Commands
 
-## Output
+```bash
+gitlore init
+gitlore build
+gitlore context --task "refactor auth flow" --files src/auth.py
+gitlore context --task "review this patch" --diff /tmp/change.diff --format prompt
+gitlore export --format report,html
+gitlore mcp
+gitlore auth
+```
 
-Default output is `gitlore-report.md` and `gitlore-report.html`. Can also generate AI assistant configs (`claude_md`, `agents_md`, `cursor_rules`, `copilot_instructions`) via the `[output]` section in `gitlore.toml`.
+## Configuration
+
+Configure the tool with `gitlore.toml`:
+
+- `[models]` for optional review classification, embeddings, and compression
+- `[build]` for lookback and coupling thresholds
+- `[sources]` to enable or disable GitHub/docs ingestion
+- `[query]` for retrieval defaults
+- `[github]` for owner/repo and token override
+- `[export]` for artifact formats
+
+GitHub and LLM enrichment are optional. Build still works with local git + docs only.
+
+## Outputs
+
+- `.gitlore/index.db` is the source of truth for retrieval
+- `gitlore context` emits `summary`, `prompt`, or `json`
+- `gitlore export` writes stable views such as `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/gitlore.mdc`, `.github/copilot-instructions.md`, `gitlore-report.md`, and `gitlore-report.html`

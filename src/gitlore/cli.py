@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from pathlib import Path
 from typing import Annotated
 
@@ -10,10 +9,11 @@ import typer
 from dotenv import load_dotenv
 from rich.console import Console
 
+from gitlore.build import build_index
 from gitlore.config import DEFAULT_CONFIG_TEMPLATE, GitloreConfig
-
-warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
-warnings.filterwarnings("ignore", message="coroutine.*was never awaited")
+from gitlore.export import load_export_bundle, write_exports
+from gitlore.mcp_server import run_stdio_server
+from gitlore.query import build_context, render_context
 
 # Load .env from CWD, then fall back to ~/.config/gitlore/.env
 load_dotenv()
@@ -21,89 +21,149 @@ load_dotenv(Path.home() / ".config" / "gitlore" / ".env")
 
 app = typer.Typer(
     name="gitlore",
-    help="Mine git history and PR reviews to generate knowledge reports.",
+    help="Build and retrieve repository tribal knowledge for humans and coding agents.",
     no_args_is_help=True,
 )
 console = Console()
 
 
 @app.command()
-def analyze(
+def build(
     repo: Annotated[
         Path, typer.Option("--repo", "-r", help="Path to git repository")
     ] = Path("."),
-    git_only: Annotated[
-        bool, typer.Option("--git-only", help="Skip GitHub PR comment analysis")
-    ] = False,
     since: Annotated[
         str | None, typer.Option("--since", "-s", help="Lookback period (e.g. 6m, 12m)")
     ] = None,
-    formats: Annotated[
-        str | None,
-        typer.Option("--format", "-f", help="Output formats (comma-separated)"),
-    ] = None,
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Preview without writing files")
-    ] = False,
     config_path: Annotated[
         Path | None, typer.Option("--config", "-c", help="Path to gitlore.toml")
     ] = None,
     no_cache: Annotated[
-        bool, typer.Option("--no-cache", help="Skip cache reads (still writes to cache)")
-    ] = False,
-    debug: Annotated[
-        bool, typer.Option("--debug", help="Log all LLM calls (input/output)")
+        bool, typer.Option("--no-cache", help="Skip cached GitHub/LLM reads")
     ] = False,
 ) -> None:
-    """Analyze repository and generate knowledge report."""
-    import logging
-
-    # Always log to file
-    log_path = repo / ".gitlore.log"
-    file_handler = logging.FileHandler(log_path, mode="w")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
-    gitlore_logger = logging.getLogger("gitlore")
-    gitlore_logger.setLevel(logging.DEBUG)
-    gitlore_logger.addHandler(file_handler)
-
-    if debug:
-        import litellm as _litellm
-
-        _litellm.suppress_debug_info = True
-        _litellm.set_verbose = False
-
-        stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(logging.Formatter("\n%(name)s\n%(message)s\n"))
-        gitlore_logger.addHandler(stream_handler)
-
-    from gitlore.pipeline import run_pipeline
-
+    """Build the local `.gitlore/index.db` knowledge index."""
     config = GitloreConfig.load(config_path)
     config.repo_path = str(repo.resolve())
 
     if since:
         months = _parse_since(since)
-        if months:
-            config.analysis.since_months = months
+        if months is not None:
+            config.build.since_months = months
 
-    if formats:
-        config.output.formats = [f.strip() for f in formats.split(",")]
+    metadata = build_index(config, use_cache=not no_cache, console=console)
+    coverage = metadata.source_coverage
+    console.print(
+        "\n[bold green]Built index[/bold green] "
+        f"with {metadata.fact_count} facts from {metadata.total_commits_analyzed} commits."
+    )
+    console.print(
+        "[dim]"
+        f"Sources: git={coverage.git} github={coverage.github} docs={coverage.docs} "
+        f"classified_reviews={coverage.classified_reviews} semantic={coverage.semantic}"
+        "[/dim]"
+    )
 
-    result = run_pipeline(config, git_only=git_only, use_cache=not no_cache, console=console)
 
-    if dry_run:
-        from gitlore.formatters.report import format_report
+@app.command()
+def context(
+    task: Annotated[str, typer.Option("--task", help="Task description for retrieval")],
+    repo: Annotated[
+        Path, typer.Option("--repo", "-r", help="Path to git repository")
+    ] = Path("."),
+    files: Annotated[
+        list[str] | None,
+        typer.Option("--files", help="Repo-relative files to focus retrieval on"),
+    ] = None,
+    diff_path: Annotated[
+        Path | None,
+        typer.Option("--diff", help="Path to a diff/patch file for review tasks"),
+    ] = None,
+    format_name: Annotated[
+        str | None,
+        typer.Option("--format", help="summary, prompt, or json"),
+    ] = None,
+    max_items: Annotated[
+        int | None,
+        typer.Option("--max-items", help="Maximum number of retrieved items"),
+    ] = None,
+    max_tokens: Annotated[
+        int | None,
+        typer.Option("--max-tokens", help="Token budget hint for prompt rendering"),
+    ] = None,
+    compress: Annotated[
+        bool,
+        typer.Option("--compress", help="Compress the retrieved bundle with one LLM call"),
+    ] = False,
+    config_path: Annotated[
+        Path | None, typer.Option("--config", "-c", help="Path to gitlore.toml")
+    ] = None,
+) -> None:
+    """Retrieve a task-scoped context bundle from the local index."""
+    config = GitloreConfig.load(config_path)
+    config.repo_path = str(repo.resolve())
 
-        console.print("\n[bold]Generated knowledge report:[/bold]\n")
-        console.print(format_report(result))
-        console.print(f"[dim]Dry run — {len(result.findings)} findings, no files written.[/dim]")
+    bundle = build_context(
+        config,
+        task=task,
+        files=files or [],
+        diff_path=str(diff_path) if diff_path else None,
+        format_name=format_name,
+        max_items=max_items,
+        max_tokens=max_tokens,
+        compress=compress,
+    )
+    rendered = render_context(
+        bundle,
+        format_name=format_name or config.query.default_format,
+        config=config,
+        compress=compress,
+    )
+    if (format_name or config.query.default_format) == "json":
+        console.file.write(rendered + "\n")
     else:
-        from gitlore.pipeline import write_outputs
+        console.print(rendered)
 
-        written = write_outputs(result, config)
-        console.print(f"\n[bold green]Done![/bold green] Wrote {len(written)} files:")
-        for path in written:
-            console.print(f"  {path}")
+
+@app.command()
+def export(
+    repo: Annotated[
+        Path, typer.Option("--repo", "-r", help="Path to git repository")
+    ] = Path("."),
+    formats: Annotated[
+        str | None,
+        typer.Option("--format", "-f", help="Output formats (comma-separated)"),
+    ] = None,
+    config_path: Annotated[
+        Path | None, typer.Option("--config", "-c", help="Path to gitlore.toml")
+    ] = None,
+) -> None:
+    """Render stable facts from the current index into export artifacts."""
+    config = GitloreConfig.load(config_path)
+    config.repo_path = str(repo.resolve())
+    if formats:
+        config.export.formats = [item.strip() for item in formats.split(",") if item.strip()]
+
+    bundle = load_export_bundle(config)
+    written = write_exports(bundle, config)
+    console.print(f"\n[bold green]Exported[/bold green] {len(written)} files:")
+    for path in written:
+        console.print(f"  {path}")
+
+
+@app.command(name="mcp")
+def mcp_command(
+    repo: Annotated[
+        Path, typer.Option("--repo", "-r", help="Path to git repository")
+    ] = Path("."),
+    config_path: Annotated[
+        Path | None, typer.Option("--config", "-c", help="Path to gitlore.toml")
+    ] = None,
+) -> None:
+    """Run the gitlore MCP server over stdio."""
+    config = GitloreConfig.load(config_path)
+    config.repo_path = str(repo.resolve())
+    run_stdio_server(config)
 
 
 @app.command()
@@ -123,7 +183,7 @@ def init(
 
 @app.command()
 def auth() -> None:
-    """Configure GitHub authentication."""
+    """Show which optional GitHub and LLM credentials are currently available."""
     config = GitloreConfig.load()
     token = config.github.resolve_token()
     if token:
@@ -131,11 +191,17 @@ def auth() -> None:
         console.print(f"[green]GitHub token found:[/green] {masked}")
     else:
         console.print("[yellow]No GitHub token found.[/yellow]")
-        console.print("Set GITHUB_TOKEN env var or install gh CLI and run `gh auth login`.")
+        console.print("GitHub enrichment is optional. Set GITHUB_TOKEN or use `gh auth login`.")
+
+    if config.models.classifier or config.models.embedding or config.models.compressor:
+        if Path(".env").exists():
+            console.print("[green].env detected[/green] — LLM enrichment may be available.")
+        else:
+            console.print("[yellow]No local .env detected.[/yellow]")
+            console.print("Build still works with git + docs only.")
 
 
 def _parse_since(value: str) -> int | None:
-    """Parse a human duration like '6m' or '12m' into months."""
     value = value.strip().lower()
     if value.endswith("m"):
         try:

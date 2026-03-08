@@ -1,39 +1,138 @@
 # gitlore
 
-gitlore mines your git history and PR reviews to produce a knowledge report about your codebase. It reads commit patterns, file coupling, churn hotspots, reverts, and fix-after chains from git log, then pulls PR review comments from GitHub and classifies them by theme. The output is a report documenting what your team's actual practices and pain points are, grounded in evidence from the repo itself.
+`gitlore` builds a local planning-advice index from git history, PR review comments, and repo docs, then retrieves task-specific repository guidance for humans and coding agents.
 
-## How it works
+The product shape is:
 
-The tool runs two branches of analysis. Branch A is purely local: it parses git log output to find hotspot files, co-change coupling between files, revert chains, fix-after patterns, and commit conventions. No network or LLM calls needed. Branch B fetches merged PR review comments from GitHub's GraphQL API, classifies each one with an LLM, embeds them, and clusters similar comments together to surface recurring themes.
+```bash
+gitlore build
+gitlore advise --task "fix flaky retries" --files src/client.py
+gitlore export --format agents_md,claude_md
+gitlore mcp
+```
 
-Both branches feed into an agentic synthesis step where an LLM investigates the patterns using read-only git tools (blame, file history, diffs) and writes the final report.
+`build` is the expensive stage. It mines repository history, generates bounded investigation leads, and can use a Claude Agent SDK loop to turn those leads into reusable advice cards.
+
+`advise` and the MCP tools are retrieval-only by default. They read the prebuilt index and return a small planning brief with the most relevant notes for the current task.
+
+## What It Stores
+
+The on-disk source of truth is `.gitlore/index.db`.
+
+The index stores:
+
+- `advice_cards`
+  Short planning-oriented notes already written in final usable form.
+- `card_evidence`
+  Provenance for each card, such as PRs, commits, or coupling signals.
+- `file_edges`
+  Related-file relationships used to widen planning scope.
+- `build_metadata`
+  Information about the last successful build.
+
+The retrieval unit is an advice card, not a raw metric and not a report section.
+
+## What Query Returns
+
+`gitlore advise` and the MCP `get_planning_brief` tool return a small planning brief:
+
+- `summary`
+- `notes`
+  Each note contains only:
+  - `text`
+  - `refs`
+  - `priority`
+
+Example:
+
+```json
+{
+  "summary": "3 planning notes for this change",
+  "notes": [
+    {
+      "text": "Edits in `src/client.py` usually require updates in `tests/test_client.py`.",
+      "refs": ["src/client.py::tests/test_client.py"],
+      "priority": "high"
+    }
+  ]
+}
+```
 
 ## Install
 
-```
-curl -LsSf https://astral.sh/uv/install.sh | sh  # if you don't have uv
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install .
-```
-
-## Usage
-
-```
-gitlore init              # create gitlore.toml
-gitlore analyze            # full pipeline
-gitlore analyze --git-only # skip GitHub/LLM, local analysis only
-gitlore analyze --dry-run  # preview without writing files
-gitlore analyze --no-cache # skip cache reads
 ```
 
 For development:
 
-```
+```bash
 uv sync --all-extras
-uv run gitlore analyze
 ```
 
-Configure models, GitHub repo, and output formats in `gitlore.toml`. Needs an `OPENROUTER_API_KEY` in `.env` (or `~/.config/gitlore/.env`) and GitHub auth via `gh` CLI or `GITHUB_TOKEN`.
+## Commands
 
-## Output
+```bash
+gitlore init
+gitlore build
+gitlore advise --task "refactor auth flow" --files src/auth.py
+gitlore advise --task "review this patch" --diff /tmp/change.diff --format json
+gitlore export --format report,html
+gitlore mcp
+gitlore auth
+```
 
-Default output is `gitlore-report.md` and `gitlore-report.html`. Can also generate AI assistant configs (`claude_md`, `agents_md`, `cursor_rules`, `copilot_instructions`) via the `[output]` section in `gitlore.toml`.
+## MCP Tools
+
+Primary tool:
+
+- `get_planning_brief(task, files?, diff_path?, tentative_plan?, question?, format?, max_notes?)`
+
+Supporting tools:
+
+- `get_related_files(path, limit?)`
+- `get_repo_guidance()`
+
+The intended agent workflow is:
+
+1. draft a tentative plan
+2. call `get_planning_brief`
+3. revise the plan using the returned notes
+4. begin editing
+
+## Configuration
+
+Configure the tool with `gitlore.toml`:
+
+- `[models]`
+  Optional model strings for review classification, embeddings, and build-time synthesis.
+- `[build]`
+  Lookback and coupling thresholds.
+- `[sources]`
+  Enable or disable GitHub/docs ingestion.
+- `[query]`
+  Retrieval defaults.
+- `[github]`
+  Owner/repo and token override.
+- `[export]`
+  Artifact formats.
+
+GitHub and LLM enrichment are optional.
+
+- With no GitHub token, build still works from local git + docs.
+- With no build-time synthesis model or no `OPENROUTER_API_KEY`, build falls back to deterministic advice cards derived from the leads.
+- Query-time retrieval does not require live LLM calls by default.
+
+## Outputs
+
+- `.gitlore/index.db`
+  Source of truth for retrieval.
+- `gitlore advise`
+  Emits `summary` or `json`.
+- `gitlore export`
+  Writes stable views such as `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/gitlore.mdc`, `.github/copilot-instructions.md`, `gitlore-report.md`, and `gitlore-report.html`.
+
+## Developer Docs
+
+For the full technical flow, data model, prompt flow, index schema, retrieval behavior, and testing strategy, see [docs/development.md](/Users/snek/.codex/worktrees/d994/gitlore/docs/development.md).

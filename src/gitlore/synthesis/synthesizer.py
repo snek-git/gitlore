@@ -28,6 +28,9 @@ from claude_agent_sdk import (
 
 from gitlore.config import GitloreConfig
 from gitlore.models import (
+    AdviceCard,
+    AdviceKind,
+    AdvicePriority,
     AnalysisResult,
     ChurnHotspot,
     ClassifiedComment,
@@ -35,11 +38,14 @@ from gitlore.models import (
     CommentCluster,
     CouplingPair,
     EvidencePoint,
+    EvidenceRef,
     Finding,
     FindingCategory,
     FindingSeverity,
     FixAfterChain,
     HubFile,
+    InvestigationLead,
+    QueryIntent,
     RevertChain,
     SynthesisResult,
 )
@@ -536,14 +542,22 @@ async def _check_tool_permission(
     return PermissionResultAllow()
 
 
-async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object = None) -> str:
+async def _run_agent(
+    prompt: str,
+    repo_path: str,
+    model: str,
+    *,
+    _log_fn: object = None,
+    system_prompt_name: str = "advice_card_system",
+    max_turns: int = 50,
+) -> str:
     """Run the agentic synthesis loop via Claude Agent SDK.
 
     The agent receives analysis data as its prompt, investigates patterns
     using git tools, then outputs structured guidance content. Retries up to
     _MAX_RETRIES times on transient subprocess/API failures.
     """
-    from typing import Callable
+    from collections.abc import Callable
     _print: Callable[[str], None] = _log_fn if callable(_log_fn) else lambda _: None
 
     _configure_openrouter_env(model)
@@ -559,12 +573,12 @@ async def _run_agent(prompt: str, repo_path: str, model: str, *, _log_fn: object
         stderr_lines.clear()
         server = create_git_tools_server(repo_path)
         options = ClaudeAgentOptions(
-            system_prompt=load_prompt("synthesis_system"),
+            system_prompt=load_prompt(system_prompt_name),
             mcp_servers={"git": server},
             allowed_tools=_ALLOWED_TOOLS,
             permission_mode="bypassPermissions",
             can_use_tool=_check_tool_permission,
-            max_turns=50,
+            max_turns=max_turns,
             cwd=repo_path,
             stderr=_capture_stderr,
         )
@@ -681,3 +695,137 @@ def synthesize(
         has_review_data=has_review_data,
         model_used=config.models.synthesizer,
     )
+
+
+_CARD_BLOCK_RE = re.compile(r"<card\b([^>]*)>(.*?)</card>", re.DOTALL)
+_CARD_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
+_CARD_TEXT_RE = re.compile(r"<text>(.*?)</text>", re.DOTALL)
+_ANCHOR_RE = re.compile(r"<anchor>(.*?)</anchor>", re.DOTALL)
+
+
+def _parse_advice_cards_xml(
+    raw: str,
+    lead: InvestigationLead,
+) -> list[AdviceCard]:
+    """Parse build-time advice card XML emitted by the agent."""
+    cards: list[AdviceCard] = []
+    for match in _CARD_BLOCK_RE.finditer(raw):
+        attrs = dict(_CARD_ATTR_RE.findall(match.group(1)))
+        body = match.group(2)
+        text_match = _CARD_TEXT_RE.search(body)
+        if not text_match:
+            continue
+        text = text_match.group(1).strip()
+        if not text:
+            continue
+
+        priority_raw = attrs.get("priority", "medium")
+        kind_raw = attrs.get("kind", "risk")
+        applies_raw = attrs.get("applies_to", "general")
+
+        try:
+            priority = AdvicePriority(priority_raw)
+        except ValueError:
+            priority = lead.priority
+        try:
+            kind = AdviceKind(kind_raw)
+        except ValueError:
+            kind = lead.kind.advice_kind
+
+        applies_to: list[QueryIntent] = []
+        for item in [part.strip() for part in applies_raw.split(",") if part.strip()]:
+            try:
+                applies_to.append(QueryIntent(item))
+            except ValueError:
+                continue
+        if not applies_to:
+            applies_to = list(lead.applies_to) or [QueryIntent.GENERAL]
+
+        anchors = [anchor.strip() for anchor in _ANCHOR_RE.findall(body) if anchor.strip()]
+        if not anchors:
+            anchors = list(lead.anchors)
+
+        card_id = _stable_card_id(text, anchors)
+        cards.append(
+            AdviceCard(
+                id=card_id,
+                text=text,
+                priority=priority,
+                kind=kind,
+                applies_to=applies_to,
+                anchors=anchors,
+                confidence=max(lead.confidence, 0.5),
+                support_count=max(lead.support_count, 1),
+                search_text=" ".join([text, " ".join(anchors), lead.search_text]).strip(),
+                created_by_build=f"agent:{lead.id}",
+                evidence=[
+                    EvidenceRef(
+                        source_type=item.source_type,
+                        label=item.label,
+                        ref=item.ref,
+                        excerpt=item.excerpt,
+                        weight=item.weight,
+                    )
+                    for item in lead.evidence
+                ],
+            )
+        )
+    return cards
+
+
+def _stable_card_id(text: str, anchors: list[str]) -> str:
+    import hashlib
+
+    return hashlib.sha1("\0".join([text, ",".join(anchors)]).encode()).hexdigest()[:16]
+def investigate_leads(
+    leads: list[InvestigationLead],
+    config: GitloreConfig,
+    repo_path: str,
+    *,
+    _log_fn: object = None,
+) -> dict[str, list[AdviceCard]]:
+    """Investigate bounded leads with Claude Agent SDK and emit advice cards."""
+    if not leads or not config.models.synthesizer or not os.environ.get("OPENROUTER_API_KEY", ""):
+        return {}
+
+    cards_by_lead: dict[str, list[AdviceCard]] = {}
+    for index, lead in enumerate(leads, start=1):
+        prompt = "\n".join(
+            [
+                f"Lead {index}/{len(leads)}",
+                f"Title: {lead.title}",
+                f"Kind: {lead.kind.value}",
+                f"Priority: {lead.priority.value}",
+                f"Anchors: {', '.join(lead.anchors) or '(none)'}",
+                f"Task intents: {', '.join(item.value for item in lead.applies_to) or 'general'}",
+                "",
+                "Lead summary:",
+                lead.summary,
+                "",
+                "Existing evidence:",
+                *[
+                    f"- {item.source_type} {item.ref}: {item.excerpt}"
+                    for item in lead.evidence[:5]
+                ],
+                "",
+                "Additional context:",
+                lead.prompt_context or "(none)",
+            ]
+        )
+        try:
+            raw = asyncio.run(
+                _run_agent(
+                    prompt,
+                    repo_path,
+                    config.models.synthesizer,
+                    _log_fn=_log_fn,
+                    system_prompt_name="advice_card_system",
+                    max_turns=8,
+                )
+            )
+        except Exception:
+            continue
+        parsed = _parse_advice_cards_xml(raw, lead)
+        if parsed:
+            cards_by_lead[lead.id] = parsed
+    return cards_by_lead

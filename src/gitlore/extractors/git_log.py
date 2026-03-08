@@ -24,7 +24,8 @@ GIT_LOG_FORMAT = "%x1f".join(
         "%s",  # subject
         "%b",  # body
     ]
-) + "%x1e"
+) 
+GIT_LOG_FORMAT = "%x1e" + GIT_LOG_FORMAT
 
 _RENAME_RE = re.compile(r"\{(.+?) => (.+?)\}")
 
@@ -79,7 +80,7 @@ def _parse_commit_block(raw: str) -> Commit | None:
         return None
 
     parts = header_line.split(FIELD_SEP)
-    if len(parts) < 7:
+    if len(parts) < 6:
         return None
 
     hash_ = parts[0]
@@ -88,7 +89,7 @@ def _parse_commit_block(raw: str) -> Commit | None:
     date_str = parts[3]
     parents_str = parts[4]
     subject = parts[5]
-    body = FIELD_SEP.join(parts[6:])  # body may theoretically contain NUL
+    body = FIELD_SEP.join(parts[6:]) if len(parts) > 6 else ""
 
     commit = Commit(
         hash=hash_,
@@ -168,6 +169,11 @@ def iter_commits(
                 yield commit
 
     proc.wait()
+    tail = buffer.strip()
+    if tail:
+        commit = _parse_commit_block(tail)
+        if commit:
+            yield commit
     if proc.returncode != 0:
         stderr = proc.stderr.read()
         raise RuntimeError(f"git log failed: {stderr}")

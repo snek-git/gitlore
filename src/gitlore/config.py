@@ -12,18 +12,45 @@ from pathlib import Path
 @dataclass
 class ModelConfig:
     classifier: str = "openrouter/google/gemini-3-flash-preview"
-    synthesizer: str = "openrouter/anthropic/claude-sonnet-4-5-20250929"
     embedding: str = "openrouter/openai/text-embedding-3-small"
+    compressor: str = "openrouter/anthropic/claude-sonnet-4.6"
+    synthesizer: str = "openrouter/anthropic/claude-sonnet-4.6"
+
+    def __post_init__(self) -> None:
+        """Keep compressor and synthesizer aligned when only one is configured."""
+        if self.compressor and not self.synthesizer:
+            self.synthesizer = self.compressor
+        elif self.synthesizer and not self.compressor:
+            self.compressor = self.synthesizer
 
 
 @dataclass
-class AnalysisConfig:
+class BuildConfig:
     since_months: int = 12
     half_life_days: float = 180
     min_coupling_confidence: float = 0.25
     min_coupling_lift: float = 1.5
     max_files_per_commit: int = 50
     min_shared_commits: int = 3
+
+
+@dataclass
+class SourcesConfig:
+    github: bool = True
+    docs: bool = True
+
+
+@dataclass
+class QueryConfig:
+    default_format: str = "summary"
+    max_items: int = 12
+    max_tokens: int = 1200
+    semantic: bool = True
+
+
+@dataclass
+class ExportConfig:
+    formats: list[str] = field(default_factory=lambda: ["report", "html"])
 
 
 @dataclass
@@ -65,29 +92,24 @@ class GitHubConfig:
             )
             if result.returncode == 0:
                 url = result.stdout.strip()
-                # Handle both SSH and HTTPS formats:
-                #   git@github.com:owner/repo.git
-                #   https://github.com/owner/repo.git
                 import re
-                m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url)
-                if m:
-                    return m.group(1), m.group(2)
+
+                match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$", url)
+                if match:
+                    return match.group(1), match.group(2)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         return self.owner, self.repo
 
 
 @dataclass
-class OutputConfig:
-    formats: list[str] = field(default_factory=lambda: ["report", "html"])
-
-
-@dataclass
 class GitloreConfig:
     models: ModelConfig = field(default_factory=ModelConfig)
-    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    build: BuildConfig = field(default_factory=BuildConfig)
+    sources: SourcesConfig = field(default_factory=SourcesConfig)
+    query: QueryConfig = field(default_factory=QueryConfig)
+    export: ExportConfig = field(default_factory=ExportConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
-    output: OutputConfig = field(default_factory=OutputConfig)
     repo_path: str = "."
 
     @classmethod
@@ -98,49 +120,72 @@ class GitloreConfig:
         if not path.exists():
             return cls()
 
-        with open(path, "rb") as f:
-            raw = tomllib.load(f)
+        with open(path, "rb") as file_obj:
+            raw = tomllib.load(file_obj)
 
         config = cls()
 
-        if "models" in raw:
-            m = raw["models"]
-            config.models = ModelConfig(
-                classifier=m.get("classifier", config.models.classifier),
-                synthesizer=m.get("synthesizer", config.models.synthesizer),
-                embedding=m.get("embedding", config.models.embedding),
-            )
+        models = raw.get("models", {})
+        config.models = ModelConfig(
+            classifier=models.get("classifier", config.models.classifier),
+            embedding=models.get("embedding", config.models.embedding),
+            compressor=models.get(
+                "compressor",
+                models.get("synthesizer", config.models.compressor),
+            ),
+            synthesizer=models.get(
+                "synthesizer",
+                models.get("compressor", config.models.synthesizer),
+            ),
+        )
 
-        if "analysis" in raw:
-            a = raw["analysis"]
-            config.analysis = AnalysisConfig(
-                since_months=a.get("since_months", config.analysis.since_months),
-                half_life_days=a.get("half_life_days", config.analysis.half_life_days),
-                min_coupling_confidence=a.get(
-                    "min_coupling_confidence", config.analysis.min_coupling_confidence
-                ),
-                min_coupling_lift=a.get("min_coupling_lift", config.analysis.min_coupling_lift),
-                max_files_per_commit=a.get(
-                    "max_files_per_commit", config.analysis.max_files_per_commit
-                ),
-                min_shared_commits=a.get(
-                    "min_shared_commits", config.analysis.min_shared_commits
-                ),
-            )
+        build = raw.get("build", {})
+        config.build = BuildConfig(
+            since_months=build.get("since_months", config.build.since_months),
+            half_life_days=build.get("half_life_days", config.build.half_life_days),
+            min_coupling_confidence=build.get(
+                "min_coupling_confidence",
+                config.build.min_coupling_confidence,
+            ),
+            min_coupling_lift=build.get(
+                "min_coupling_lift",
+                config.build.min_coupling_lift,
+            ),
+            max_files_per_commit=build.get(
+                "max_files_per_commit",
+                config.build.max_files_per_commit,
+            ),
+            min_shared_commits=build.get(
+                "min_shared_commits",
+                config.build.min_shared_commits,
+            ),
+        )
 
-        if "github" in raw:
-            g = raw["github"]
-            config.github = GitHubConfig(
-                owner=g.get("owner", ""),
-                repo=g.get("repo", ""),
-                token=g.get("token", ""),
-            )
+        sources = raw.get("sources", {})
+        config.sources = SourcesConfig(
+            github=sources.get("github", config.sources.github),
+            docs=sources.get("docs", config.sources.docs),
+        )
 
-        if "output" in raw:
-            o = raw["output"]
-            config.output = OutputConfig(
-                formats=o.get("formats", config.output.formats),
-            )
+        query = raw.get("query", {})
+        config.query = QueryConfig(
+            default_format=query.get("default_format", config.query.default_format),
+            max_items=query.get("max_items", config.query.max_items),
+            max_tokens=query.get("max_tokens", config.query.max_tokens),
+            semantic=query.get("semantic", config.query.semantic),
+        )
+
+        export = raw.get("export", {})
+        config.export = ExportConfig(
+            formats=export.get("formats", config.export.formats),
+        )
+
+        github = raw.get("github", {})
+        config.github = GitHubConfig(
+            owner=github.get("owner", ""),
+            repo=github.get("repo", ""),
+            token=github.get("token", ""),
+        )
 
         return config
 
@@ -148,21 +193,32 @@ class GitloreConfig:
 DEFAULT_CONFIG_TEMPLATE = """\
 [models]
 classifier = "openrouter/google/gemini-3-flash-preview"
-synthesizer = "openrouter/anthropic/claude-sonnet-4-5-20250929"
 embedding = "openrouter/openai/text-embedding-3-small"
+compressor = "openrouter/anthropic/claude-sonnet-4.6"
 
-[analysis]
+[build]
 since_months = 12
 half_life_days = 180
 min_coupling_confidence = 0.25
 min_coupling_lift = 1.5
 max_files_per_commit = 50
+min_shared_commits = 3
+
+[sources]
+github = true
+docs = true
+
+[query]
+default_format = "summary"
+max_items = 12
+max_tokens = 1200
+semantic = true
 
 [github]
 # token from GITHUB_TOKEN env or `gh auth token`
 owner = ""
 repo = ""
 
-[output]
+[export]
 formats = ["report", "html"]
 """

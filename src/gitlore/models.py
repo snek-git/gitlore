@@ -334,3 +334,205 @@ class SynthesisResult:
                     lines.append(f"- *{e.source}:* {e.text}")
                 lines.append("")
         return "\n".join(lines).strip()
+
+
+class QueryIntent(Enum):
+    BUGFIX = "bugfix"
+    REFACTOR = "refactor"
+    FEATURE = "feature"
+    REVIEW = "review"
+    GENERAL = "general"
+
+
+@dataclass
+class EvidenceRef:
+    """A single piece of provenance for an advice card or lead."""
+
+    source_type: str
+    label: str
+    ref: str
+    excerpt: str
+    weight: float = 1.0
+
+
+class AdvicePriority(Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+    @property
+    def sort_rank(self) -> int:
+        """Return the stable ordering used for cards and leads."""
+        return {
+            AdvicePriority.HIGH: 0,
+            AdvicePriority.MEDIUM: 1,
+            AdvicePriority.LOW: 2,
+        }[self]
+
+    @property
+    def retrieval_weight(self) -> float:
+        """Return the lightweight score boost used during retrieval."""
+        return {
+            AdvicePriority.HIGH: 1.0,
+            AdvicePriority.MEDIUM: 0.6,
+            AdvicePriority.LOW: 0.3,
+        }[self]
+
+
+class AdviceKind(Enum):
+    SCOPE = "scope"
+    RISK = "risk"
+    VALIDATION = "validation"
+    REVIEW = "review"
+    CONVENTION = "convention"
+    HISTORICAL = "historical"
+
+
+class LeadKind(Enum):
+    HOTSPOT = "hotspot"
+    COUPLING = "coupling"
+    TEST_ASSOCIATION = "test_association"
+    FIX_AFTER = "fix_after"
+    REVERT = "revert"
+    REVIEW = "review"
+    DOC = "doc"
+    CONVENTION = "convention"
+
+    @property
+    def advice_kind(self) -> AdviceKind:
+        """Return the default advice kind for leads of this type."""
+        return {
+            LeadKind.HOTSPOT: AdviceKind.RISK,
+            LeadKind.COUPLING: AdviceKind.SCOPE,
+            LeadKind.TEST_ASSOCIATION: AdviceKind.VALIDATION,
+            LeadKind.FIX_AFTER: AdviceKind.HISTORICAL,
+            LeadKind.REVERT: AdviceKind.HISTORICAL,
+            LeadKind.REVIEW: AdviceKind.REVIEW,
+            LeadKind.DOC: AdviceKind.CONVENTION,
+            LeadKind.CONVENTION: AdviceKind.CONVENTION,
+        }[self]
+
+
+@dataclass
+class InvestigationLead:
+    """A bounded investigation target for build-time agentic analysis."""
+
+    id: str
+    kind: LeadKind
+    title: str
+    summary: str
+    anchors: list[str] = field(default_factory=list)
+    applies_to: list[QueryIntent] = field(default_factory=list)
+    priority: AdvicePriority = AdvicePriority.MEDIUM
+    support_count: int = 0
+    confidence: float = 0.0
+    evidence: list[EvidenceRef] = field(default_factory=list)
+    search_text: str = ""
+    prompt_context: str = ""
+
+
+@dataclass
+class AdviceCard:
+    """A build-time advisory note written for planning-time retrieval."""
+
+    id: str
+    text: str
+    priority: AdvicePriority
+    kind: AdviceKind
+    applies_to: list[QueryIntent] = field(default_factory=list)
+    anchors: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    support_count: int = 0
+    search_text: str = ""
+    created_by_build: str = "deterministic"
+    evidence: list[EvidenceRef] = field(default_factory=list)
+
+
+@dataclass
+class SourceCoverage:
+    """Describes which data sources were available during the last build."""
+
+    git: bool = True
+    github: bool = False
+    docs: bool = False
+    semantic: bool = False
+    classified_reviews: bool = False
+
+
+@dataclass
+class BuildMetadata:
+    """Metadata about the latest built context index."""
+
+    repo_path: str
+    built_at: datetime
+    total_commits_analyzed: int = 0
+    card_count: int = 0
+    source_coverage: SourceCoverage = field(default_factory=SourceCoverage)
+
+    @property
+    def fact_count(self) -> int:
+        """Backward-compatible alias used by older callers."""
+        return self.card_count
+
+
+@dataclass
+class FileEdge:
+    """A structural relationship used to widen planning scope."""
+
+    src: str
+    dst: str
+    edge_type: str
+    score: float
+    reason: str
+
+
+@dataclass
+class RelatedFile:
+    """A file suggested because it is structurally related to the query scope."""
+
+    path: str
+    reason: str
+    score: float
+
+
+@dataclass
+class PlanningQuery:
+    """The retrieval inputs for a planning-time lookup."""
+
+    task: str
+    intent: QueryIntent
+    files: list[str] = field(default_factory=list)
+    diff_text: str = ""
+    diff_path: str | None = None
+    tentative_plan: str = ""
+    question: str = ""
+    max_notes: int = 5
+
+
+@dataclass
+class PlanningNote:
+    """A minimal planning-time note returned to agents and humans."""
+
+    text: str
+    refs: list[str] = field(default_factory=list)
+    priority: AdvicePriority = AdvicePriority.MEDIUM
+
+
+@dataclass
+class PlanningBrief:
+    """A bounded planning-time retrieval result."""
+
+    task: str
+    summary: str = ""
+    notes: list[PlanningNote] = field(default_factory=list)
+    related_files: list[RelatedFile] = field(default_factory=list)
+    source_coverage: SourceCoverage = field(default_factory=SourceCoverage)
+    build_metadata: BuildMetadata | None = None
+
+
+@dataclass
+class ExportBundle:
+    """Stable advice cards rendered into export formats."""
+
+    cards: list[AdviceCard] = field(default_factory=list)
+    build_metadata: BuildMetadata | None = None

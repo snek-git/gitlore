@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from gitlore.config import AnalysisConfig
+from gitlore.config import BuildConfig
 from gitlore.models import ChurnHotspot, ClassifiedCommit, CommitType
 from gitlore.utils.temporal import exponential_decay
 
 
 def analyze_churn(
     classified: list[ClassifiedCommit],
-    config: AnalysisConfig | None = None,
+    config: BuildConfig | None = None,
     reference_date: datetime | None = None,
 ) -> list[ChurnHotspot]:
     """Detect churn hotspots from classified commits.
@@ -29,9 +29,9 @@ def analyze_churn(
         List of ChurnHotspot sorted by score descending.
     """
     if config is None:
-        config = AnalysisConfig()
+        config = BuildConfig()
     if reference_date is None:
-        reference_date = datetime.now(timezone.utc)
+        reference_date = datetime.now(UTC)
 
     half_life = config.half_life_days
 

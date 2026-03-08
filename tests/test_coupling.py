@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from gitlore.analyzers.coupling import analyze_coupling
-from gitlore.config import AnalysisConfig
+from gitlore.config import BuildConfig
 from gitlore.models import Commit, FileChange
 
 
@@ -18,7 +18,7 @@ def _make_commit(
         hash=hash,
         author_name="Test",
         author_email="test@test.com",
-        author_date=date or datetime(2026, 1, 1, tzinfo=timezone.utc),
+        author_date=date or datetime(2026, 1, 1, tzinfo=UTC),
         parents=["p1"],
         subject="some commit",
         body="",
@@ -29,8 +29,8 @@ def _make_commit(
 class TestAnalyzeCoupling:
     def test_basic_coupling(self):
         """Two files that always change together should be coupled."""
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
 
         commits = [
             _make_commit(
@@ -52,7 +52,7 @@ class TestAnalyzeCoupling:
             )
         )
 
-        config = AnalysisConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
+        config = BuildConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
         pairs, modules, hubs = analyze_coupling(commits, config, reference_date=ref_date)
 
         assert len(pairs) > 0
@@ -66,8 +66,8 @@ class TestAnalyzeCoupling:
 
     def test_no_coupling_different_files(self):
         """Files that never change together should not be coupled."""
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
 
         commits = [
             _make_commit(
@@ -81,27 +81,27 @@ class TestAnalyzeCoupling:
                 date=base + timedelta(days=1),
             ),
         ]
-        config = AnalysisConfig(min_shared_commits=1)
+        config = BuildConfig(min_shared_commits=1)
         pairs, modules, hubs = analyze_coupling(commits, config, reference_date=ref_date)
         assert len(pairs) == 0
 
     def test_mega_commit_skipped(self):
         """Commits with too many files should be skipped."""
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
 
         # One mega commit with 60 files
         files = [FileChange(f"src/file{i}.py", added=1, deleted=0) for i in range(60)]
         commits = [_make_commit("c1", files, date=base)]
 
-        config = AnalysisConfig(max_files_per_commit=50, min_shared_commits=1)
+        config = BuildConfig(max_files_per_commit=50, min_shared_commits=1)
         pairs, modules, hubs = analyze_coupling(commits, config, reference_date=ref_date)
         assert len(pairs) == 0
 
     def test_confidence_asymmetry(self):
         """Confidence should be directional."""
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
 
         commits = []
         # a.py and b.py change together 5 times
@@ -126,7 +126,7 @@ class TestAnalyzeCoupling:
                 )
             )
 
-        config = AnalysisConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
+        config = BuildConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
         pairs, _, _ = analyze_coupling(commits, config, reference_date=ref_date)
 
         assert len(pairs) > 0
@@ -139,8 +139,8 @@ class TestAnalyzeCoupling:
 
     def test_rename_map_applied(self):
         """File renames should be resolved before counting."""
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
 
         commits = [
             _make_commit(
@@ -169,7 +169,7 @@ class TestAnalyzeCoupling:
             ),
         ]
         rename_map = {"old_name.py": "new_name.py"}
-        config = AnalysisConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
+        config = BuildConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
         pairs, _, _ = analyze_coupling(
             commits, config, reference_date=ref_date, rename_map=rename_map
         )
@@ -187,8 +187,8 @@ class TestAnalyzeCoupling:
 
     def test_hub_file_detection(self):
         """A file coupled with many others should be detected as a hub."""
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
 
         commits = []
         # hub.py changes with a.py, b.py, c.py, d.py multiple times
@@ -205,7 +205,7 @@ class TestAnalyzeCoupling:
                     )
                 )
 
-        config = AnalysisConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
+        config = BuildConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
         pairs, modules, hubs = analyze_coupling(commits, config, reference_date=ref_date)
 
         assert len(hubs) > 0
@@ -215,8 +215,8 @@ class TestAnalyzeCoupling:
 
     def test_module_detection(self):
         """Groups of files that change together should form modules."""
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
 
         commits = []
         # Module 1: auth files change together
@@ -246,7 +246,7 @@ class TestAnalyzeCoupling:
                 )
             )
 
-        config = AnalysisConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
+        config = BuildConfig(min_shared_commits=2, min_coupling_confidence=0.1, min_coupling_lift=1.0)
         pairs, modules, hubs = analyze_coupling(commits, config, reference_date=ref_date)
 
         # Should detect at least 2 modules

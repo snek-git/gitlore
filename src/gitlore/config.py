@@ -17,7 +17,7 @@ class ModelConfig:
     synthesizer: str = "openrouter/anthropic/claude-sonnet-4.6"
 
     def __post_init__(self) -> None:
-        """Keep compressor and synthesizer aligned during the transition."""
+        """Keep compressor and synthesizer aligned when only one is configured."""
         if self.compressor and not self.synthesizer:
             self.synthesizer = self.compressor
         elif self.synthesizer and not self.compressor:
@@ -32,10 +32,6 @@ class BuildConfig:
     min_coupling_lift: float = 1.5
     max_files_per_commit: int = 50
     min_shared_commits: int = 3
-
-
-# Preserve the old import path used by analyzer modules and tests.
-AnalysisConfig = BuildConfig
 
 
 @dataclass
@@ -116,24 +112,6 @@ class GitloreConfig:
     github: GitHubConfig = field(default_factory=GitHubConfig)
     repo_path: str = "."
 
-    @property
-    def analysis(self) -> BuildConfig:
-        """Legacy alias used by the existing analyzer modules."""
-        return self.build
-
-    @analysis.setter
-    def analysis(self, value: BuildConfig) -> None:
-        self.build = value
-
-    @property
-    def output(self) -> ExportConfig:
-        """Legacy alias for report-oriented callers."""
-        return self.export
-
-    @output.setter
-    def output(self, value: ExportConfig) -> None:
-        self.export = value
-
     @classmethod
     def load(cls, path: Path | None = None) -> GitloreConfig:
         """Load config from gitlore.toml, falling back to defaults."""
@@ -161,7 +139,7 @@ class GitloreConfig:
             ),
         )
 
-        build = raw.get("build", raw.get("analysis", {}))
+        build = raw.get("build", {})
         config.build = BuildConfig(
             since_months=build.get("since_months", config.build.since_months),
             half_life_days=build.get("half_life_days", config.build.half_life_days),
@@ -197,7 +175,7 @@ class GitloreConfig:
             semantic=query.get("semantic", config.query.semantic),
         )
 
-        export = raw.get("export", raw.get("output", {}))
+        export = raw.get("export", {})
         config.export = ExportConfig(
             formats=export.get("formats", config.export.formats),
         )

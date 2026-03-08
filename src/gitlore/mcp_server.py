@@ -1,53 +1,48 @@
-"""MCP server exposing gitlore context tools."""
+"""MCP server exposing planning-time gitlore tools."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-from dataclasses import asdict
 
 from mcp.server.fastmcp import FastMCP
 
 from gitlore.config import GitloreConfig
 from gitlore.export import load_export_bundle
-from gitlore.index import IndexStore, bundle_to_json
-from gitlore.query import build_context, render_context
+from gitlore.index import IndexStore, guidance_to_json
+from gitlore.query import build_planning_brief, render_planning_brief
 
 
 def create_mcp_server(config: GitloreConfig) -> FastMCP:
-    """Create the MCP server for agent-facing context lookup."""
+    """Create the MCP server for planning-time retrieval."""
     server = FastMCP(
         name="gitlore",
         instructions=(
-            "Use gitlore to retrieve repository tribal knowledge before editing code. "
-            "Prefer get_context for task-scoped briefs, get_related_files to widen scope, "
-            "and get_repo_rules for stable repo-wide guidance."
+            "Use gitlore during planning to retrieve repository-specific tribal knowledge. "
+            "Prefer get_planning_brief before editing code, get_related_files to widen scope, "
+            "and get_repo_guidance for stable repo-wide guidance."
         ),
     )
 
-    @server.tool(description="Return a task-scoped repository context bundle.")
-    def get_context(
+    @server.tool(description="Return a small planning brief for the current task and candidate scope.")
+    def get_planning_brief(
         task: str,
         files: list[str] | None = None,
         diff_path: str | None = None,
+        tentative_plan: str = "",
+        question: str = "",
         format: str = "json",
-        max_items: int | None = None,
-        max_tokens: int | None = None,
-        compress: bool = False,
+        max_notes: int = 5,
     ) -> str:
-        bundle = build_context(
+        brief = build_planning_brief(
             config,
             task=task,
             files=files,
             diff_path=diff_path,
-            format_name=format,
-            max_items=max_items,
-            max_tokens=max_tokens,
-            compress=compress,
+            tentative_plan=tentative_plan,
+            question=question,
+            max_notes=max_notes,
         )
-        if format == "json":
-            return bundle_to_json(bundle)
-        return render_context(bundle, format_name=format, config=config, compress=compress)
+        return render_planning_brief(brief, format_name=format)
 
     @server.tool(description="Return related files for a given repository path.")
     def get_related_files(path: str, limit: int = 5) -> str:
@@ -58,24 +53,10 @@ def create_mcp_server(config: GitloreConfig) -> FastMCP:
             store.close()
         return "\n".join(f"{item.path}\t{item.reason}\t{item.score:.2f}" for item in related)
 
-    @server.tool(description="Return stable repository rules and doc guidance.")
-    def get_repo_rules() -> str:
+    @server.tool(description="Return short repo-wide guidance cards.")
+    def get_repo_guidance() -> str:
         bundle = load_export_bundle(config)
-        payload = {
-            "facts": [
-                {
-                    "id": fact.id,
-                    "kind": fact.kind.value,
-                    "title": fact.title,
-                    "guidance": fact.guidance,
-                    "files": fact.files,
-                    "evidence": [asdict(item) for item in fact.evidence],
-                }
-                for fact in bundle.facts
-            ],
-            "build_metadata": asdict(bundle.build_metadata) if bundle.build_metadata else None,
-        }
-        return json.dumps(payload, indent=2, default=str)
+        return guidance_to_json(bundle.cards, bundle.build_metadata)
 
     return server
 

@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import combinations
 
 import networkx as nx
 from networkx.algorithms.community import louvain_communities
 
-from gitlore.config import AnalysisConfig
+from gitlore.config import BuildConfig
 from gitlore.extractors.git_log import resolve_path
 from gitlore.models import Commit, CouplingPair, HubFile, ImplicitModule
 from gitlore.utils.temporal import exponential_decay
@@ -18,7 +18,7 @@ from gitlore.utils.temporal import exponential_decay
 
 def analyze_coupling(
     commits: list[Commit],
-    config: AnalysisConfig | None = None,
+    config: BuildConfig | None = None,
     reference_date: datetime | None = None,
     rename_map: dict[str, str] | None = None,
 ) -> tuple[list[CouplingPair], list[ImplicitModule], list[HubFile]]:
@@ -38,9 +38,9 @@ def analyze_coupling(
         Tuple of (coupling pairs, implicit modules, hub files).
     """
     if config is None:
-        config = AnalysisConfig()
+        config = BuildConfig()
     if reference_date is None:
-        reference_date = datetime.now(timezone.utc)
+        reference_date = datetime.now(UTC)
     if rename_map is None:
         rename_map = {}
 

@@ -1,5 +1,5 @@
-"""Synthesis stage: convert analysis patterns into CLAUDE.md content."""
+"""Build-time advice investigation utilities."""
 
-from gitlore.synthesis.synthesizer import analysis_to_xml, synthesize
+from gitlore.synthesis.synthesizer import investigate_leads
 
-__all__ = ["analysis_to_xml", "synthesize"]
+__all__ = ["investigate_leads"]

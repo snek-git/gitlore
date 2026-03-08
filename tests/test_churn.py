@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from gitlore.analyzers.churn import analyze_churn
 from gitlore.analyzers.commit_classifier import classify_commits
-from gitlore.config import AnalysisConfig
-from gitlore.models import Commit, CommitType, FileChange
+from gitlore.models import Commit, FileChange
 
 
 def _make_commit(
@@ -19,7 +18,7 @@ def _make_commit(
         hash="abc1234",
         author_name="Test",
         author_email="test@test.com",
-        author_date=date or datetime(2026, 1, 1, tzinfo=timezone.utc),
+        author_date=date or datetime(2026, 1, 1, tzinfo=UTC),
         parents=["p1"],
         subject=subject,
         body="",
@@ -29,7 +28,7 @@ def _make_commit(
 
 class TestAnalyzeChurn:
     def test_basic_hotspot_detection(self, sample_commits):
-        ref_date = datetime(2026, 1, 10, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 1, 10, tzinfo=UTC)
         classified = classify_commits(sample_commits)
         hotspots = analyze_churn(classified, reference_date=ref_date)
 
@@ -43,7 +42,7 @@ class TestAnalyzeChurn:
         assert hotspot_paths == all_paths
 
     def test_fix_ratio(self, sample_commits):
-        ref_date = datetime(2026, 1, 10, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 1, 10, tzinfo=UTC)
         classified = classify_commits(sample_commits)
         hotspots = analyze_churn(classified, reference_date=ref_date)
 
@@ -55,8 +54,8 @@ class TestAnalyzeChurn:
 
     def test_score_ordering(self):
         """Files with more commits and fixes should score higher."""
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
-        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
 
         commits = [
             _make_commit(
@@ -90,18 +89,18 @@ class TestAnalyzeChurn:
 
     def test_temporal_decay(self):
         """Recent commits should contribute more to weighted count."""
-        ref_date = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 7, 1, tzinfo=UTC)
 
         commits = [
             _make_commit(
                 "feat: old change",
                 [FileChange("old.py", added=10, deleted=5)],
-                date=datetime(2025, 1, 1, tzinfo=timezone.utc),  # 18 months ago
+                date=datetime(2025, 1, 1, tzinfo=UTC),  # 18 months ago
             ),
             _make_commit(
                 "feat: new change",
                 [FileChange("new.py", added=10, deleted=5)],
-                date=datetime(2026, 6, 15, tzinfo=timezone.utc),  # 2 weeks ago
+                date=datetime(2026, 6, 15, tzinfo=UTC),  # 2 weeks ago
             ),
         ]
         classified = classify_commits(commits)
@@ -117,12 +116,12 @@ class TestAnalyzeChurn:
         assert hotspots == []
 
     def test_churn_ratio(self):
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
         commits = [
             _make_commit(
                 "feat: add file",
                 [FileChange("a.py", added=100, deleted=50)],
-                date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                date=datetime(2026, 1, 1, tzinfo=UTC),
             ),
         ]
         classified = classify_commits(commits)
@@ -135,12 +134,12 @@ class TestAnalyzeChurn:
         assert a_hs.lines_deleted == 50
 
     def test_binary_files_handled(self):
-        ref_date = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        ref_date = datetime(2026, 2, 1, tzinfo=UTC)
         commits = [
             _make_commit(
                 "feat: add image",
                 [FileChange("image.png", added=None, deleted=None)],
-                date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                date=datetime(2026, 1, 1, tzinfo=UTC),
             ),
         ]
         classified = classify_commits(commits)

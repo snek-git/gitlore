@@ -336,32 +336,6 @@ class SynthesisResult:
         return "\n".join(lines).strip()
 
 
-# ── Context index output ────────────────────────────────────────────────────
-
-
-class FactKind(Enum):
-    RULE = "rule"
-    DOC_GUIDANCE = "doc_guidance"
-    FRAGILE_AREA = "fragile_area"
-    FILE_RELATIONSHIP = "file_relationship"
-    REVIEW_THEME = "review_theme"
-    HISTORICAL_EXAMPLE = "historical_example"
-    TEST_ASSOCIATION = "test_association"
-
-
-class FactStability(Enum):
-    STABLE = "stable"
-    SITUATIONAL = "situational"
-    EXAMPLE = "example"
-
-
-class KnowledgeSeverity(Enum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    NONE = "none"
-
-
 class QueryIntent(Enum):
     BUGFIX = "bugfix"
     REFACTOR = "refactor"
@@ -372,69 +346,105 @@ class QueryIntent(Enum):
 
 @dataclass
 class EvidenceRef:
-    """A single piece of provenance for a knowledge fact."""
+    """A single piece of provenance for an advice card or lead."""
 
     source_type: str
     label: str
     ref: str
     excerpt: str
+    weight: float = 1.0
+
+
+class AdvicePriority(Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+    @property
+    def sort_rank(self) -> int:
+        """Return the stable ordering used for cards and leads."""
+        return {
+            AdvicePriority.HIGH: 0,
+            AdvicePriority.MEDIUM: 1,
+            AdvicePriority.LOW: 2,
+        }[self]
+
+    @property
+    def retrieval_weight(self) -> float:
+        """Return the lightweight score boost used during retrieval."""
+        return {
+            AdvicePriority.HIGH: 1.0,
+            AdvicePriority.MEDIUM: 0.6,
+            AdvicePriority.LOW: 0.3,
+        }[self]
+
+
+class AdviceKind(Enum):
+    SCOPE = "scope"
+    RISK = "risk"
+    VALIDATION = "validation"
+    REVIEW = "review"
+    CONVENTION = "convention"
+    HISTORICAL = "historical"
+
+
+class LeadKind(Enum):
+    HOTSPOT = "hotspot"
+    COUPLING = "coupling"
+    TEST_ASSOCIATION = "test_association"
+    FIX_AFTER = "fix_after"
+    REVERT = "revert"
+    REVIEW = "review"
+    DOC = "doc"
+    CONVENTION = "convention"
+
+    @property
+    def advice_kind(self) -> AdviceKind:
+        """Return the default advice kind for leads of this type."""
+        return {
+            LeadKind.HOTSPOT: AdviceKind.RISK,
+            LeadKind.COUPLING: AdviceKind.SCOPE,
+            LeadKind.TEST_ASSOCIATION: AdviceKind.VALIDATION,
+            LeadKind.FIX_AFTER: AdviceKind.HISTORICAL,
+            LeadKind.REVERT: AdviceKind.HISTORICAL,
+            LeadKind.REVIEW: AdviceKind.REVIEW,
+            LeadKind.DOC: AdviceKind.CONVENTION,
+            LeadKind.CONVENTION: AdviceKind.CONVENTION,
+        }[self]
 
 
 @dataclass
-class KnowledgeFact:
-    """A retrieval-oriented knowledge unit built from repo evidence."""
+class InvestigationLead:
+    """A bounded investigation target for build-time agentic analysis."""
 
     id: str
-    kind: FactKind
-    stability: FactStability
+    kind: LeadKind
     title: str
-    guidance: str
-    files: list[str] = field(default_factory=list)
-    subsystems: list[str] = field(default_factory=list)
-    applicable_intents: list[QueryIntent] = field(default_factory=list)
+    summary: str
+    anchors: list[str] = field(default_factory=list)
+    applies_to: list[QueryIntent] = field(default_factory=list)
+    priority: AdvicePriority = AdvicePriority.MEDIUM
     support_count: int = 0
     confidence: float = 0.0
-    severity: KnowledgeSeverity = KnowledgeSeverity.NONE
-    last_seen_at: datetime | None = None
     evidence: list[EvidenceRef] = field(default_factory=list)
     search_text: str = ""
+    prompt_context: str = ""
 
 
 @dataclass
-class RelatedFile:
-    """A file suggested because it is structurally related to the query scope."""
+class AdviceCard:
+    """A build-time advisory note written for planning-time retrieval."""
 
-    path: str
-    reason: str
-    score: float
-
-
-@dataclass
-class ContextQuery:
-    """The retrieval inputs for a context lookup."""
-
-    task: str
-    intent: QueryIntent
-    files: list[str] = field(default_factory=list)
-    diff_text: str = ""
-    diff_path: str | None = None
-    max_items: int = 12
-    max_tokens: int = 1200
-    format: str = "summary"
-    compress: bool = False
-
-
-@dataclass
-class ContextItem:
-    """A ranked context result derived from a KnowledgeFact."""
-
-    fact_id: str
-    kind: FactKind
-    title: str
-    guidance: str
-    files: list[str] = field(default_factory=list)
-    score: float = 0.0
-    why_selected: str = ""
+    id: str
+    text: str
+    priority: AdvicePriority
+    kind: AdviceKind
+    applies_to: list[QueryIntent] = field(default_factory=list)
+    anchors: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    support_count: int = 0
+    search_text: str = ""
+    created_by_build: str = "deterministic"
     evidence: list[EvidenceRef] = field(default_factory=list)
 
 
@@ -456,30 +466,73 @@ class BuildMetadata:
     repo_path: str
     built_at: datetime
     total_commits_analyzed: int = 0
-    fact_count: int = 0
+    card_count: int = 0
     source_coverage: SourceCoverage = field(default_factory=SourceCoverage)
+
+    @property
+    def fact_count(self) -> int:
+        """Backward-compatible alias used by older callers."""
+        return self.card_count
 
 
 @dataclass
-class ContextBundle:
-    """A bounded retrieval result ready for a human or coding agent."""
+class FileEdge:
+    """A structural relationship used to widen planning scope."""
+
+    src: str
+    dst: str
+    edge_type: str
+    score: float
+    reason: str
+
+
+@dataclass
+class RelatedFile:
+    """A file suggested because it is structurally related to the query scope."""
+
+    path: str
+    reason: str
+    score: float
+
+
+@dataclass
+class PlanningQuery:
+    """The retrieval inputs for a planning-time lookup."""
 
     task: str
     intent: QueryIntent
     files: list[str] = field(default_factory=list)
-    summary: list[str] = field(default_factory=list)
-    rules: list[ContextItem] = field(default_factory=list)
-    situational: list[ContextItem] = field(default_factory=list)
-    examples: list[ContextItem] = field(default_factory=list)
+    diff_text: str = ""
+    diff_path: str | None = None
+    tentative_plan: str = ""
+    question: str = ""
+    max_notes: int = 5
+
+
+@dataclass
+class PlanningNote:
+    """A minimal planning-time note returned to agents and humans."""
+
+    text: str
+    refs: list[str] = field(default_factory=list)
+    priority: AdvicePriority = AdvicePriority.MEDIUM
+
+
+@dataclass
+class PlanningBrief:
+    """A bounded planning-time retrieval result."""
+
+    task: str
+    summary: str = ""
+    notes: list[PlanningNote] = field(default_factory=list)
     related_files: list[RelatedFile] = field(default_factory=list)
-    suggested_tests: list[str] = field(default_factory=list)
     source_coverage: SourceCoverage = field(default_factory=SourceCoverage)
     build_metadata: BuildMetadata | None = None
 
 
 @dataclass
 class ExportBundle:
-    """Stable facts rendered into export formats."""
+    """Stable advice cards rendered into export formats."""
 
-    facts: list[KnowledgeFact] = field(default_factory=list)
+    cards: list[AdviceCard] = field(default_factory=list)
     build_metadata: BuildMetadata | None = None

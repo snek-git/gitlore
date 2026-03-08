@@ -1,38 +1,42 @@
-"""Build the local knowledge index for gitlore."""
+"""Build the local advice-card index for gitlore."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import os
+from collections import defaultdict
 from datetime import UTC, datetime
-from pathlib import Path
 
 from gitlore.cache import Cache
 from gitlore.config import GitloreConfig
 from gitlore.docs import DocSnippet, extract_doc_snippets
 from gitlore.index import IndexStore
 from gitlore.models import (
+    AdviceCard,
+    AdvicePriority,
     AnalysisResult,
     BuildMetadata,
-    ChurnHotspot,
     ClassifiedComment,
     CommentCategory,
-    CommentCluster,
-    ContextBundle,
     CouplingPair,
     EvidenceRef,
-    FactKind,
-    FactStability,
+    FileEdge,
     FixAfterChain,
     HubFile,
-    KnowledgeFact,
-    KnowledgeSeverity,
+    InvestigationLead,
+    LeadKind,
     QueryIntent,
     RevertChain,
-    ReviewComment,
     SourceCoverage,
 )
+from gitlore.synthesis.synthesizer import investigate_leads
+
+MAX_HOTSPOT_LEADS = 20
+MAX_COUPLING_LEADS = 20
+MAX_REVIEW_LEADS = 15
+MAX_HISTORY_LEADS = 10
+MAX_GUIDANCE_LEADS = 10
 
 
 def build_index(
@@ -65,23 +69,18 @@ def build_index(
     _log(f"Analyzing {len(commits)} commits...")
 
     classified = classify_commits(commits)
-    conventions = analyze_conventions(classified)
-    hotspots = analyze_churn(classified, config.build)
-    revert_chains = detect_reverts(commits)
-    fix_after_chains = detect_fix_after(commits)
-    coupling_pairs, modules, hubs = analyze_coupling(commits, config.build)
-
     analysis = AnalysisResult(
-        hotspots=hotspots,
-        revert_chains=revert_chains,
-        fix_after_chains=fix_after_chains,
-        coupling_pairs=coupling_pairs,
-        implicit_modules=modules,
-        hub_files=hubs,
-        conventions=conventions,
+        hotspots=analyze_churn(classified, config.build),
+        revert_chains=detect_reverts(commits),
+        fix_after_chains=detect_fix_after(commits),
         total_commits_analyzed=len(commits),
         analysis_date=datetime.now(UTC),
     )
+    coupling_pairs, modules, hubs = analyze_coupling(commits, config.build)
+    analysis.coupling_pairs = coupling_pairs
+    analysis.implicit_modules = modules
+    analysis.hub_files = hubs
+    analysis.conventions = analyze_conventions(classified)
 
     coverage = SourceCoverage(git=True)
     cache = Cache(config.repo_path) if use_cache else None
@@ -96,20 +95,28 @@ def build_index(
         doc_snippets = extract_doc_snippets(config.repo_path)
         coverage.docs = bool(doc_snippets)
 
-    facts, relationships = _build_facts(analysis, doc_snippets)
-    embeddings = _build_embeddings(config, facts, coverage, cache=cache)
+    leads, file_edges = _build_leads(analysis, doc_snippets)
+    _log(f"Generated {len(leads)} investigation leads...")
+
+    cards_by_lead = investigate_leads(
+        leads,
+        config,
+        config.repo_path,
+        _log_fn=_log,
+    )
+    cards = _merge_cards(leads, cards_by_lead)
 
     metadata = BuildMetadata(
         repo_path=config.repo_path,
         built_at=datetime.now(UTC),
         total_commits_analyzed=len(commits),
-        fact_count=len(facts),
+        card_count=len(cards),
         source_coverage=coverage,
     )
 
     store = IndexStore(config.repo_path)
     try:
-        store.store_build(facts, relationships, metadata, embeddings)
+        store.store_build(cards, file_edges, metadata)
     finally:
         store.close()
         if cache is not None:
@@ -134,35 +141,23 @@ def _run_review_enrichment(
     if not owner or not repo or not token:
         return
 
-    comments = None
-    if cache is not None:
-        comments = cache.get_comments(owner, repo)
-
+    comments = cache.get_comments(owner, repo) if cache is not None else None
     if comments is None:
         comments = asyncio.run(fetch_review_comments(token, owner, repo))
         if cache is not None and comments:
             cache.set_comments(owner, repo, comments)
-
     if not comments:
         return
 
     coverage.github = True
-    analysis.classified_comments = []
-    analysis.comment_clusters = []
-
     if not config.models.classifier:
         return
 
     try:
-        classified = asyncio.run(
-            classify_comments(
-                comments,
-                config.models.classifier,
-                cache=cache,
-            )
+        analysis.classified_comments = asyncio.run(
+            classify_comments(comments, config.models.classifier, cache=cache)
         )
-        analysis.classified_comments = classified
-        coverage.classified_reviews = True
+        coverage.classified_reviews = bool(analysis.classified_comments)
     except Exception:
         analysis.classified_comments = []
         return
@@ -178,300 +173,169 @@ def _run_review_enrichment(
             config.models,
             cache=cache,
         )
-        if analysis.comment_clusters:
-            coverage.semantic = True
+        coverage.semantic = bool(analysis.comment_clusters)
     except Exception:
         analysis.comment_clusters = []
 
 
-def _build_facts(
+def _build_leads(
     analysis: AnalysisResult,
     doc_snippets: list[DocSnippet],
-) -> tuple[list[KnowledgeFact], list[tuple[str, str, str, float]]]:
-    facts: list[KnowledgeFact] = []
-    relationships: list[tuple[str, str, str, float]] = []
+) -> tuple[list[InvestigationLead], list[FileEdge]]:
+    leads: list[InvestigationLead] = []
+    file_edges: list[FileEdge] = []
 
-    if analysis.conventions is not None:
-        for rule_text in analysis.conventions.detected_rules:
-            facts.append(
-                _make_fact(
-                    kind=FactKind.RULE,
-                    stability=FactStability.STABLE,
-                    title=rule_text,
-                    guidance=rule_text,
-                    support_count=max(1, int(analysis.conventions.format_adherence * 100)),
-                    confidence=analysis.conventions.format_adherence,
-                    severity=KnowledgeSeverity.NONE,
-                    intents=[
-                        QueryIntent.FEATURE,
-                        QueryIntent.REFACTOR,
-                        QueryIntent.REVIEW,
-                        QueryIntent.GENERAL,
-                    ],
-                    evidence=[
-                        EvidenceRef(
-                            source_type="config",
-                            label="commit conventions",
-                            ref="commit-conventions",
-                            excerpt=rule_text,
-                        )
-                    ],
-                )
-            )
+    for hotspot in analysis.hotspots[:MAX_HOTSPOT_LEADS]:
+        leads.append(_lead_from_hotspot(hotspot))
 
-    for pair in analysis.coupling_pairs:
+    for hub in sorted(analysis.hub_files, key=lambda item: item.coupled_file_count, reverse=True)[:MAX_HOTSPOT_LEADS]:
+        leads.append(_lead_from_hub(hub))
+
+    for pair in sorted(analysis.coupling_pairs, key=lambda item: item.strength, reverse=True)[:MAX_COUPLING_LEADS]:
         confidence = max(pair.confidence_a_to_b, pair.confidence_b_to_a)
-        facts.append(_fact_from_coupling(pair, confidence))
-        relationships.extend(
-            [
-                (
-                    pair.file_a,
-                    pair.file_b,
-                    f"co-change ({confidence:.0%} of relevant commits)",
-                    pair.strength,
-                ),
-                (
-                    pair.file_b,
-                    pair.file_a,
-                    f"co-change ({confidence:.0%} of relevant commits)",
-                    pair.strength,
-                ),
-            ]
+        leads.append(_lead_from_coupling(pair, confidence))
+        file_edges.extend(_edges_from_coupling(pair, confidence))
+        test_lead = _lead_from_test_association(pair, confidence)
+        if test_lead is not None:
+            leads.append(test_lead)
+
+    for chain in sorted(analysis.fix_after_chains, key=lambda item: len(item.fixup_hashes), reverse=True)[:MAX_HISTORY_LEADS]:
+        leads.append(_lead_from_fix_after(chain))
+
+    for chain in sorted(analysis.revert_chains, key=lambda item: item.depth, reverse=True)[:MAX_HISTORY_LEADS]:
+        leads.append(_lead_from_revert(chain))
+
+    leads.extend(_review_leads(analysis)[:MAX_REVIEW_LEADS])
+    leads.extend(_guidance_leads(analysis, doc_snippets)[:MAX_GUIDANCE_LEADS])
+
+    deduped: dict[str, InvestigationLead] = {}
+    for lead in leads:
+        deduped.setdefault(lead.id, lead)
+    ordered = sorted(
+        deduped.values(),
+        key=lambda item: (item.priority.sort_rank, -item.confidence, -item.support_count, item.title),
+    )
+    return ordered, file_edges
+
+
+def _merge_cards(
+    leads: list[InvestigationLead],
+    cards_by_lead: dict[str, list[AdviceCard]],
+) -> list[AdviceCard]:
+    cards: list[AdviceCard] = []
+    for lead in leads:
+        generated = cards_by_lead.get(lead.id)
+        if generated:
+            cards.extend(generated)
+        else:
+            cards.extend(_fallback_cards_for_lead(lead))
+
+    deduped: dict[str, AdviceCard] = {}
+    for card in cards:
+        existing = deduped.get(card.id)
+        if existing is None or card.confidence > existing.confidence:
+            deduped[card.id] = card
+    return sorted(
+        deduped.values(),
+        key=lambda item: (item.priority.sort_rank, -item.confidence, -item.support_count, item.text),
+    )
+
+
+def _fallback_cards_for_lead(lead: InvestigationLead) -> list[AdviceCard]:
+    text = lead.summary
+    card_id = hashlib.sha1("\0".join([text, ",".join(lead.anchors)]).encode()).hexdigest()[:16]
+    return [
+        AdviceCard(
+            id=card_id,
+            text=text,
+            priority=lead.priority,
+            kind=lead.kind.advice_kind,
+            applies_to=list(lead.applies_to) or [QueryIntent.GENERAL],
+            anchors=list(lead.anchors),
+            confidence=max(lead.confidence, 0.4),
+            support_count=max(lead.support_count, 1),
+            search_text=" ".join([text, " ".join(lead.anchors), lead.search_text]).strip(),
+            created_by_build="deterministic",
+            evidence=list(lead.evidence),
         )
-        test_fact = _test_association_fact(pair)
-        if test_fact is not None:
-            facts.append(test_fact)
-
-    for hotspot in analysis.hotspots:
-        facts.append(_fact_from_hotspot(hotspot))
-
-    for hub in analysis.hub_files:
-        facts.append(_fact_from_hub(hub))
-
-    for chain in analysis.revert_chains:
-        facts.append(_fact_from_revert(chain))
-
-    for chain in analysis.fix_after_chains:
-        facts.append(_fact_from_fix_after(chain))
-
-    if analysis.comment_clusters:
-        for cluster in analysis.comment_clusters:
-            facts.append(_fact_from_cluster(cluster))
-    elif analysis.classified_comments:
-        for comment in analysis.classified_comments[:50]:
-            facts.append(_fact_from_classified_comment(comment))
-
-    for snippet in doc_snippets:
-        facts.append(_fact_from_doc(snippet))
-
-    deduped: dict[str, KnowledgeFact] = {}
-    for fact in facts:
-        deduped[fact.id] = fact
-    ordered_facts = sorted(deduped.values(), key=lambda item: (item.kind.value, item.id))
-    return ordered_facts, relationships
+    ]
 
 
-def _build_embeddings(
-    config: GitloreConfig,
-    facts: list[KnowledgeFact],
-    coverage: SourceCoverage,
+def _make_lead(
     *,
-    cache: Cache | None,
-) -> dict[str, list[float]]:
-    if not config.query.semantic or not config.models.embedding:
-        return {}
-    if not os.environ.get("OPENROUTER_API_KEY", ""):
-        return {}
-
-    semantic_kinds = {
-        FactKind.RULE,
-        FactKind.DOC_GUIDANCE,
-        FactKind.REVIEW_THEME,
-        FactKind.HISTORICAL_EXAMPLE,
-    }
-    candidates = [fact for fact in facts if fact.kind in semantic_kinds]
-    if not candidates:
-        return {}
-
-    texts = [fact.search_text or f"{fact.title}\n{fact.guidance}" for fact in candidates]
-    cached_vectors = cache.get_embeddings(config.models.embedding, texts) if cache else None
-    if cached_vectors is None:
-        from gitlore.utils.llm import embed
-
-        vectors = asyncio.run(embed(config.models.embedding, texts))
-        if cache is not None:
-            cache.set_embeddings(config.models.embedding, texts, vectors)
-    else:
-        vectors = cached_vectors
-
-    coverage.semantic = True
-    return {fact.id: vector for fact, vector in zip(candidates, vectors)}
-
-
-def _make_fact(
-    *,
-    kind: FactKind,
-    stability: FactStability,
+    kind: LeadKind,
     title: str,
-    guidance: str,
-    files: list[str] | None = None,
-    subsystems: list[str] | None = None,
+    summary: str,
+    anchors: list[str] | None = None,
+    applies_to: list[QueryIntent] | None = None,
+    priority: AdvicePriority = AdvicePriority.MEDIUM,
     support_count: int = 0,
     confidence: float = 0.0,
-    severity: KnowledgeSeverity = KnowledgeSeverity.NONE,
-    last_seen_at: datetime | None = None,
-    intents: list[QueryIntent] | None = None,
     evidence: list[EvidenceRef] | None = None,
-    extra_search: str = "",
-) -> KnowledgeFact:
-    files = files or []
-    subsystems = subsystems or _subsystems(files)
-    intents = intents or [QueryIntent.GENERAL]
+    search_text: str = "",
+    prompt_context: str = "",
+) -> InvestigationLead:
+    anchors = anchors or []
+    applies_to = applies_to or [QueryIntent.GENERAL]
     evidence = evidence or []
-    search_text = " ".join([title, guidance, " ".join(files), " ".join(subsystems), extra_search]).strip()
-    fact_id = hashlib.sha1(
-        "\0".join([kind.value, title, guidance, ",".join(files)]).encode()
+    lead_id = hashlib.sha1(
+        "\0".join([kind.value, title, summary, ",".join(anchors)]).encode()
     ).hexdigest()[:16]
-    return KnowledgeFact(
-        id=fact_id,
+    return InvestigationLead(
+        id=lead_id,
         kind=kind,
-        stability=stability,
         title=title,
-        guidance=guidance,
-        files=files,
-        subsystems=subsystems,
-        applicable_intents=intents,
+        summary=summary,
+        anchors=anchors,
+        applies_to=applies_to,
+        priority=priority,
         support_count=support_count,
         confidence=confidence,
-        severity=severity,
-        last_seen_at=last_seen_at,
         evidence=evidence,
-        search_text=search_text,
+        search_text=" ".join([title, summary, " ".join(anchors), search_text]).strip(),
+        prompt_context=prompt_context,
     )
 
 
-def _fact_from_coupling(pair: CouplingPair, confidence: float) -> KnowledgeFact:
-    return _make_fact(
-        kind=FactKind.FILE_RELATIONSHIP,
-        stability=FactStability.SITUATIONAL,
-        title=f"Editing {pair.file_a} usually implicates {pair.file_b}",
-        guidance=(
-            f"Changes to `{pair.file_a}` and `{pair.file_b}` frequently land together. "
-            f"Inspect both when planning edits."
+def _lead_from_hotspot(hotspot) -> InvestigationLead:
+    priority = AdvicePriority.HIGH if hotspot.fix_ratio >= 0.2 else AdvicePriority.MEDIUM
+    return _make_lead(
+        kind=LeadKind.HOTSPOT,
+        title=f"Hotspot: {hotspot.path}",
+        summary=(
+            f"`{hotspot.path}` is a fragile area: it changes often and has a {hotspot.fix_ratio:.0%} "
+            "fix ratio. Plan extra validation before editing it."
         ),
-        files=[pair.file_a, pair.file_b],
-        support_count=int(pair.shared_commits),
-        confidence=confidence,
-        severity=KnowledgeSeverity.NONE,
-        intents=[
-            QueryIntent.BUGFIX,
-            QueryIntent.FEATURE,
-            QueryIntent.REFACTOR,
-            QueryIntent.REVIEW,
-        ],
-        evidence=[
-            EvidenceRef(
-                source_type="coupling",
-                label="co-change pair",
-                ref=f"{pair.file_a}::{pair.file_b}",
-                excerpt=(
-                    f"{pair.file_a} and {pair.file_b} change together in "
-                    f"{confidence:.0%} of commits touching either file."
-                ),
-            )
-        ],
-        extra_search=f"co-change related files {pair.shared_commits:.0f}",
-    )
-
-
-def _test_association_fact(pair: CouplingPair) -> KnowledgeFact | None:
-    files = [pair.file_a, pair.file_b]
-    source_files = [path for path in files if not _is_test_path(path)]
-    test_files = [path for path in files if _is_test_path(path)]
-    if len(source_files) != 1 or len(test_files) != 1:
-        return None
-    source_file = source_files[0]
-    test_file = test_files[0]
-    confidence = max(pair.confidence_a_to_b, pair.confidence_b_to_a)
-    return _make_fact(
-        kind=FactKind.TEST_ASSOCIATION,
-        stability=FactStability.SITUATIONAL,
-        title=f"Changes to {source_file} often require {test_file}",
-        guidance=f"When editing `{source_file}`, inspect and update `{test_file}`.",
-        files=[source_file, test_file],
-        support_count=int(pair.shared_commits),
-        confidence=confidence,
-        severity=KnowledgeSeverity.NONE,
-        intents=[
-            QueryIntent.BUGFIX,
-            QueryIntent.FEATURE,
-            QueryIntent.REFACTOR,
-            QueryIntent.REVIEW,
-        ],
-        evidence=[
-            EvidenceRef(
-                source_type="coupling",
-                label="test association",
-                ref=f"{source_file}::{test_file}",
-                excerpt=f"These files co-change in {confidence:.0%} of relevant commits.",
-            )
-        ],
-    )
-
-
-def _fact_from_hotspot(hotspot: ChurnHotspot) -> KnowledgeFact:
-    severity = KnowledgeSeverity.HIGH if hotspot.fix_ratio >= 0.3 else KnowledgeSeverity.MEDIUM
-    return _make_fact(
-        kind=FactKind.FRAGILE_AREA,
-        stability=FactStability.SITUATIONAL,
-        title=f"{hotspot.path} is a high-churn area",
-        guidance=(
-            f"`{hotspot.path}` changes frequently and has a {hotspot.fix_ratio:.0%} fix ratio. "
-            "Budget extra validation and test coverage."
-        ),
-        files=[hotspot.path],
+        anchors=[hotspot.path],
+        applies_to=[QueryIntent.BUGFIX, QueryIntent.FEATURE, QueryIntent.REFACTOR, QueryIntent.REVIEW],
+        priority=priority,
         support_count=hotspot.commit_count,
         confidence=min(hotspot.score / 10.0, 1.0),
-        severity=severity,
-        intents=[
-            QueryIntent.BUGFIX,
-            QueryIntent.FEATURE,
-            QueryIntent.REFACTOR,
-            QueryIntent.REVIEW,
-        ],
         evidence=[
             EvidenceRef(
                 source_type="hotspot",
                 label="churn hotspot",
                 ref=hotspot.path,
-                excerpt=(
-                    f"{hotspot.commit_count} commits, {hotspot.lines_added + hotspot.lines_deleted} "
-                    f"lines churned, {hotspot.fix_ratio:.0%} fixes."
-                ),
+                excerpt=f"{hotspot.commit_count} commits, {hotspot.fix_ratio:.0%} fixes.",
             )
         ],
+        prompt_context="Investigate why this file is fragile and what agents usually miss when changing it.",
     )
 
 
-def _fact_from_hub(hub: HubFile) -> KnowledgeFact:
-    return _make_fact(
-        kind=FactKind.FRAGILE_AREA,
-        stability=FactStability.SITUATIONAL,
-        title=f"{hub.path} fans out across the repo",
-        guidance=(
-            f"`{hub.path}` couples with {hub.coupled_file_count} other files. "
-            "Treat it as a coordination point when changing surrounding code."
+def _lead_from_hub(hub: HubFile) -> InvestigationLead:
+    return _make_lead(
+        kind=LeadKind.HOTSPOT,
+        title=f"Coordination hub: {hub.path}",
+        summary=(
+            f"`{hub.path}` fans out across the repo and acts like a coordination point. "
+            "Changes here often have a wider scope than the diff suggests."
         ),
-        files=[hub.path],
+        anchors=[hub.path],
+        applies_to=[QueryIntent.BUGFIX, QueryIntent.FEATURE, QueryIntent.REFACTOR, QueryIntent.REVIEW],
+        priority=AdvicePriority.MEDIUM,
         support_count=hub.coupled_file_count,
         confidence=min(hub.total_coupling_weight / 10.0, 1.0),
-        severity=KnowledgeSeverity.MEDIUM,
-        intents=[
-            QueryIntent.BUGFIX,
-            QueryIntent.FEATURE,
-            QueryIntent.REFACTOR,
-            QueryIntent.REVIEW,
-        ],
         evidence=[
             EvidenceRef(
                 source_type="coupling",
@@ -480,54 +344,81 @@ def _fact_from_hub(hub: HubFile) -> KnowledgeFact:
                 excerpt=f"Coupled with {hub.coupled_file_count} files.",
             )
         ],
+        prompt_context="Investigate which neighboring files or tests usually matter when this file changes.",
     )
 
 
-def _fact_from_revert(chain: RevertChain) -> KnowledgeFact:
-    title = f"Past change to {', '.join(chain.files[:2]) or chain.original_subject} was reverted"
-    guidance = (
-        f"`{chain.original_subject}` was reverted {chain.depth} time(s). "
-        "Review prior failure modes before repeating the approach."
-    )
-    return _make_fact(
-        kind=FactKind.HISTORICAL_EXAMPLE,
-        stability=FactStability.EXAMPLE,
-        title=title,
-        guidance=guidance,
-        files=chain.files,
-        support_count=chain.depth,
-        confidence=0.9,
-        severity=KnowledgeSeverity.HIGH,
-        last_seen_at=chain.original_date,
-        intents=[QueryIntent.BUGFIX, QueryIntent.REVIEW],
+def _lead_from_coupling(pair: CouplingPair, confidence: float) -> InvestigationLead:
+    return _make_lead(
+        kind=LeadKind.COUPLING,
+        title=f"Coupling: {pair.file_a} + {pair.file_b}",
+        summary=(
+            f"When editing `{pair.file_a}`, you should probably inspect `{pair.file_b}` too. "
+            "These files change together often enough that plans are frequently too narrow."
+        ),
+        anchors=[pair.file_a, pair.file_b],
+        applies_to=[QueryIntent.BUGFIX, QueryIntent.FEATURE, QueryIntent.REFACTOR, QueryIntent.REVIEW],
+        priority=AdvicePriority.HIGH if confidence >= 0.5 else AdvicePriority.MEDIUM,
+        support_count=int(pair.shared_commits),
+        confidence=confidence,
         evidence=[
             EvidenceRef(
-                source_type="revert",
-                label="revert chain",
-                ref=chain.original_hash,
-                excerpt=chain.original_subject,
+                source_type="coupling",
+                label="co-change pair",
+                ref=f"{pair.file_a}::{pair.file_b}",
+                excerpt=f"Co-change confidence {confidence:.0%} across relevant commits.",
             )
         ],
+        prompt_context="Confirm whether the coupling reflects a real planning dependency or just incidental churn.",
     )
 
 
-def _fact_from_fix_after(chain: FixAfterChain) -> KnowledgeFact:
-    title = f"{chain.original_subject} needed follow-up fixes"
-    guidance = (
-        f"`{chain.original_subject}` needed {len(chain.fixup_hashes)} follow-up fix(es) within "
-        f"{chain.time_span}. Check the same edge cases before editing this area."
+def _lead_from_test_association(pair: CouplingPair, confidence: float) -> InvestigationLead | None:
+    files = [pair.file_a, pair.file_b]
+    source_files = [path for path in files if not _is_test_path(path)]
+    test_files = [path for path in files if _is_test_path(path)]
+    if len(source_files) != 1 or len(test_files) != 1:
+        return None
+    source_file = source_files[0]
+    test_file = test_files[0]
+    return _make_lead(
+        kind=LeadKind.TEST_ASSOCIATION,
+        title=f"Test association: {source_file} -> {test_file}",
+        summary=(
+            f"When editing `{source_file}`, inspect `{test_file}`. This area repeatedly needs "
+            "test updates alongside code changes."
+        ),
+        anchors=[source_file, test_file],
+        applies_to=[QueryIntent.BUGFIX, QueryIntent.FEATURE, QueryIntent.REFACTOR, QueryIntent.REVIEW],
+        priority=AdvicePriority.HIGH,
+        support_count=int(pair.shared_commits),
+        confidence=confidence,
+        evidence=[
+            EvidenceRef(
+                source_type="coupling",
+                label="test association",
+                ref=f"{source_file}::{test_file}",
+                excerpt=f"These files co-change in {confidence:.0%} of relevant commits.",
+            )
+        ],
+        prompt_context="Focus on what validation or scenario coverage this test file usually provides.",
     )
-    return _make_fact(
-        kind=FactKind.HISTORICAL_EXAMPLE,
-        stability=FactStability.EXAMPLE,
-        title=title,
-        guidance=guidance,
-        files=chain.files,
+
+
+def _lead_from_fix_after(chain: FixAfterChain) -> InvestigationLead:
+    priority = AdvicePriority.HIGH if chain.tier.value == "immediate" or len(chain.fixup_hashes) >= 3 else AdvicePriority.MEDIUM
+    return _make_lead(
+        kind=LeadKind.FIX_AFTER,
+        title=f"Fix-after: {chain.original_subject}",
+        summary=(
+            f"Changes like `{chain.original_subject}` needed {len(chain.fixup_hashes)} follow-up fixes. "
+            "Check the same edge cases before you plan a similar edit."
+        ),
+        anchors=list(chain.files),
+        applies_to=[QueryIntent.BUGFIX, QueryIntent.REVIEW],
+        priority=priority,
         support_count=len(chain.fixup_hashes),
         confidence=0.8,
-        severity=KnowledgeSeverity.HIGH if chain.tier.value == "immediate" else KnowledgeSeverity.MEDIUM,
-        last_seen_at=chain.original_date,
-        intents=[QueryIntent.BUGFIX, QueryIntent.REVIEW],
         evidence=[
             EvidenceRef(
                 source_type="fix_after",
@@ -536,136 +427,187 @@ def _fact_from_fix_after(chain: FixAfterChain) -> KnowledgeFact:
                 excerpt="; ".join(chain.fixup_subjects[:3]) or chain.original_subject,
             )
         ],
+        search_text=chain.original_subject,
+        prompt_context="Inspect the original and fixup commits to identify the repeated planning mistake.",
     )
 
 
-def _fact_from_cluster(cluster: CommentCluster) -> KnowledgeFact:
-    files = sorted(
-        {
-            comment.comment.file_path
-            for comment in cluster.comments
-            if comment.comment.file_path
-        }
-    )
-    severity = _severity_from_categories(
-        [
-            category
-            for classified in cluster.comments
-            for category in classified.categories
-        ]
-    )
-    evidence = [
-        EvidenceRef(
-            source_type="review_cluster",
-            label=f"PR #{classified.comment.pr_number}",
-            ref=str(classified.comment.pr_number),
-            excerpt=classified.comment.body[:180],
-        )
-        for classified in cluster.comments[:5]
-    ]
-    return _make_fact(
-        kind=FactKind.REVIEW_THEME,
-        stability=FactStability.SITUATIONAL,
-        title=cluster.label,
-        guidance=f"Reviewers repeatedly flag this theme: {cluster.label}.",
-        files=files,
-        support_count=len(cluster.comments),
-        confidence=cluster.coherence or 0.7,
-        severity=severity,
-        intents=[
-            QueryIntent.BUGFIX,
-            QueryIntent.REFACTOR,
-            QueryIntent.FEATURE,
-            QueryIntent.REVIEW,
-        ],
-        evidence=evidence,
-        extra_search=" ".join(
-            comment.comment.body for comment in cluster.comments[:5]
+def _lead_from_revert(chain: RevertChain) -> InvestigationLead:
+    return _make_lead(
+        kind=LeadKind.REVERT,
+        title=f"Revert: {chain.original_subject}",
+        summary=(
+            f"`{chain.original_subject}` was reverted. Review the failure mode before repeating "
+            "a similar approach in this area."
         ),
-    )
-
-
-def _fact_from_classified_comment(comment: ClassifiedComment) -> KnowledgeFact:
-    file_path = comment.comment.file_path or ""
-    severity = _severity_from_categories(comment.categories)
-    title = f"Review feedback near {file_path or 'general code'}"
-    return _make_fact(
-        kind=FactKind.REVIEW_THEME,
-        stability=FactStability.SITUATIONAL,
-        title=title,
-        guidance=comment.comment.body,
-        files=[file_path] if file_path else [],
-        support_count=1,
-        confidence=comment.confidence,
-        severity=severity,
-        intents=[
-            QueryIntent.BUGFIX,
-            QueryIntent.REFACTOR,
-            QueryIntent.FEATURE,
-            QueryIntent.REVIEW,
-        ],
+        anchors=list(chain.files),
+        applies_to=[QueryIntent.BUGFIX, QueryIntent.REVIEW],
+        priority=AdvicePriority.HIGH,
+        support_count=chain.depth,
+        confidence=0.9,
         evidence=[
             EvidenceRef(
-                source_type="review_comment",
-                label=f"PR #{comment.comment.pr_number}",
-                ref=str(comment.comment.pr_number),
-                excerpt=comment.comment.body[:180],
+                source_type="revert",
+                label="revert chain",
+                ref=chain.original_hash,
+                excerpt=chain.original_subject,
             )
         ],
-        extra_search=" ".join(category.value for category in comment.categories),
+        search_text=chain.original_subject,
+        prompt_context="Inspect the original and revert commits and determine what should change in future plans.",
     )
 
 
-def _fact_from_doc(snippet: DocSnippet) -> KnowledgeFact:
-    return _make_fact(
-        kind=FactKind.DOC_GUIDANCE,
-        stability=FactStability.STABLE,
-        title=f"{snippet.title} ({snippet.path})",
-        guidance=snippet.content,
-        files=[snippet.path],
-        support_count=1,
-        confidence=0.7,
-        severity=KnowledgeSeverity.NONE,
-        intents=[
-            QueryIntent.FEATURE,
-            QueryIntent.REFACTOR,
-            QueryIntent.REVIEW,
-            QueryIntent.GENERAL,
-        ],
-        evidence=[
-            EvidenceRef(
-                source_type=snippet.source_type,
-                label=snippet.path,
-                ref=snippet.path,
-                excerpt=snippet.content[:180],
+def _review_leads(analysis: AnalysisResult) -> list[InvestigationLead]:
+    leads: list[InvestigationLead] = []
+    if analysis.comment_clusters:
+        for cluster in analysis.comment_clusters:
+            anchors = sorted(
+                {
+                    item.comment.file_path
+                    for item in cluster.comments
+                    if item.comment.file_path
+                }
             )
-        ],
-        extra_search=snippet.path,
+            leads.append(
+                _make_lead(
+                    kind=LeadKind.REVIEW,
+                    title=f"Review theme: {cluster.label}",
+                    summary=f"Reviewers repeatedly flag this theme: {cluster.label}.",
+                    anchors=anchors,
+                    applies_to=[QueryIntent.BUGFIX, QueryIntent.FEATURE, QueryIntent.REFACTOR, QueryIntent.REVIEW],
+                    priority=AdvicePriority.HIGH if len(cluster.comments) >= 4 else AdvicePriority.MEDIUM,
+                    support_count=len(cluster.comments),
+                    confidence=cluster.coherence or 0.7,
+                    evidence=[
+                        EvidenceRef(
+                            source_type="review_cluster",
+                            label=f"PR #{item.comment.pr_number}",
+                            ref=f"PR #{item.comment.pr_number}",
+                            excerpt=item.comment.body[:180],
+                        )
+                        for item in cluster.comments[:5]
+                    ],
+                    search_text=" ".join(item.comment.body for item in cluster.comments[:5]),
+                    prompt_context="Decide whether this review theme is a real planning constraint or just noise.",
+                )
+            )
+        return leads
+
+    grouped: dict[tuple[str, str], list[ClassifiedComment]] = defaultdict(list)
+    for comment in analysis.classified_comments:
+        categories = [item.value for item in comment.categories if item not in {
+            CommentCategory.PRAISE,
+            CommentCategory.QUESTION,
+            CommentCategory.NITPICK,
+        }]
+        if not categories:
+            continue
+        anchor = comment.comment.file_path or "repo"
+        grouped[(anchor, categories[0])].append(comment)
+
+    for (anchor, category), comments in grouped.items():
+        if len(comments) < 2:
+            continue
+        leads.append(
+            _make_lead(
+                kind=LeadKind.REVIEW,
+                title=f"Review pattern in {anchor}: {category}",
+                summary=(
+                    f"Review history around `{anchor}` repeatedly raises {category}-style objections. "
+                    "This likely reflects a real maintainer preference or risk."
+                ),
+                anchors=[] if anchor == "repo" else [anchor],
+                applies_to=[QueryIntent.BUGFIX, QueryIntent.FEATURE, QueryIntent.REFACTOR, QueryIntent.REVIEW],
+                priority=AdvicePriority.HIGH if len(comments) >= 3 else AdvicePriority.MEDIUM,
+                support_count=len(comments),
+                confidence=max(sum(item.confidence for item in comments) / len(comments), 0.6),
+                evidence=[
+                    EvidenceRef(
+                        source_type="review_comment",
+                        label=f"PR #{item.comment.pr_number}",
+                        ref=f"PR #{item.comment.pr_number}",
+                        excerpt=item.comment.body[:180],
+                    )
+                    for item in comments[:5]
+                ],
+                search_text=" ".join(item.comment.body for item in comments[:5]),
+                prompt_context="Focus on repeated review objections that should change an agent's plan.",
+            )
+        )
+    return sorted(
+        leads,
+        key=lambda item: (item.priority.sort_rank, -item.support_count, -item.confidence, item.title),
     )
 
 
-def _subsystems(files: list[str]) -> list[str]:
-    subsystems: set[str] = set()
-    for path in files:
-        parts = Path(path).parts
-        if len(parts) >= 2:
-            subsystems.add("/".join(parts[:2]))
-        elif parts:
-            subsystems.add(parts[0])
-    return sorted(subsystems)
+def _guidance_leads(analysis: AnalysisResult, doc_snippets: list[DocSnippet]) -> list[InvestigationLead]:
+    leads: list[InvestigationLead] = []
+    if analysis.conventions is not None:
+        for rule_text in analysis.conventions.detected_rules[:MAX_GUIDANCE_LEADS]:
+            leads.append(
+                _make_lead(
+                    kind=LeadKind.CONVENTION,
+                    title=f"Convention: {rule_text}",
+                    summary=rule_text,
+                    anchors=[],
+                    applies_to=[QueryIntent.FEATURE, QueryIntent.REFACTOR, QueryIntent.REVIEW, QueryIntent.GENERAL],
+                    priority=AdvicePriority.MEDIUM,
+                    support_count=max(1, int(analysis.conventions.format_adherence * 100)),
+                    confidence=analysis.conventions.format_adherence,
+                    evidence=[
+                        EvidenceRef(
+                            source_type="config",
+                            label="commit conventions",
+                            ref="commit-conventions",
+                            excerpt=rule_text,
+                        )
+                    ],
+                    prompt_context="Only keep this as a planning card if it affects code or review outcomes, not just commit hygiene.",
+                )
+            )
+
+    for snippet in doc_snippets:
+        if not _is_guidance_snippet(snippet):
+            continue
+        leads.append(
+            _make_lead(
+                kind=LeadKind.DOC,
+                title=f"Guidance: {snippet.title}",
+                summary=snippet.content[:240],
+                anchors=[snippet.path],
+                applies_to=[QueryIntent.FEATURE, QueryIntent.REFACTOR, QueryIntent.REVIEW, QueryIntent.GENERAL],
+                priority=AdvicePriority.LOW,
+                support_count=1,
+                confidence=0.6,
+                evidence=[
+                    EvidenceRef(
+                        source_type=snippet.source_type,
+                        label=snippet.path,
+                        ref=snippet.path,
+                        excerpt=snippet.content[:180],
+                    )
+                ],
+                search_text=f"{snippet.title} {snippet.path}",
+                prompt_context="Only turn this into a card if it encodes stable repo guidance that affects planning.",
+            )
+        )
+    return leads
+
+
+def _edges_from_coupling(pair: CouplingPair, confidence: float) -> list[FileEdge]:
+    reason = f"co-change ({confidence:.0%} of relevant commits)"
+    return [
+        FileEdge(src=pair.file_a, dst=pair.file_b, edge_type="cochange", score=pair.strength, reason=reason),
+        FileEdge(src=pair.file_b, dst=pair.file_a, edge_type="cochange", score=pair.strength, reason=reason),
+    ]
+
+
+def _is_guidance_snippet(snippet: DocSnippet) -> bool:
+    title = snippet.title.lower()
+    return any(token in title for token in {"build", "run", "environment", "config", "convention", "testing"})
 
 
 def _is_test_path(path: str) -> bool:
     lower = path.lower()
     return lower.startswith("tests/") or "/test" in lower or lower.endswith("_test.py")
-
-
-def _severity_from_categories(categories: list[CommentCategory]) -> KnowledgeSeverity:
-    values = {category.value for category in categories}
-    if "security" in values or "bug" in values:
-        return KnowledgeSeverity.HIGH
-    if "architecture" in values or "performance" in values:
-        return KnowledgeSeverity.MEDIUM
-    if values:
-        return KnowledgeSeverity.LOW
-    return KnowledgeSeverity.NONE

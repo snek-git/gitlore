@@ -283,6 +283,7 @@ class KnowledgeNote:
     confidence: str = "medium"
     created_at: datetime | None = None
     search_text: str = ""
+    embedding: list[float] | None = None
 
     def __post_init__(self) -> None:
         if self.confidence not in _VALID_CONFIDENCE:

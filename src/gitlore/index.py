@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,15 @@ from gitlore.models import (
     RelatedFile,
     SourceCoverage,
 )
+
+
+def _floats_to_blob(floats: list[float]) -> bytes:
+    return struct.pack(f"{len(floats)}d", *floats)
+
+
+def _blob_to_floats(blob: bytes) -> list[float]:
+    count = len(blob) // 8
+    return list(struct.unpack(f"{count}d", blob))
 
 
 def index_path(repo_path: str) -> Path:
@@ -57,7 +67,8 @@ class IndexStore:
                 evidence_refs TEXT NOT NULL,
                 confidence TEXT NOT NULL,
                 search_text TEXT NOT NULL,
-                created_at TEXT
+                created_at TEXT,
+                embedding BLOB
             );
 
             CREATE TABLE IF NOT EXISTS file_edges (
@@ -97,8 +108,8 @@ class IndexStore:
             self._conn.execute(
                 """
                 INSERT OR REPLACE INTO knowledge_notes (
-                    id, text, anchors, evidence_refs, confidence, search_text, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    id, text, anchors, evidence_refs, confidence, search_text, created_at, embedding
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     note.id,
@@ -108,6 +119,7 @@ class IndexStore:
                     note.confidence,
                     note.search_text,
                     note.created_at.isoformat() if note.created_at else None,
+                    _floats_to_blob(note.embedding) if note.embedding else None,
                 ),
             )
             self._conn.execute(
@@ -228,6 +240,10 @@ class IndexStore:
         created_at = None
         if row["created_at"]:
             created_at = datetime.fromisoformat(row["created_at"])
+        embedding = None
+        raw_emb = row["embedding"]
+        if raw_emb is not None:
+            embedding = _blob_to_floats(raw_emb)
         return KnowledgeNote(
             id=str(row["id"]),
             text=str(row["text"]),
@@ -236,6 +252,7 @@ class IndexStore:
             confidence=str(row["confidence"]),
             created_at=created_at,
             search_text=str(row["search_text"]),
+            embedding=embedding,
         )
 
 

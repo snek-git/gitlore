@@ -4,37 +4,53 @@ Your output will be stored in a local index and retrieved by tools, agents, and 
 
 ## What you're producing
 
-Notes that capture how this specific repository works. Conventions, workflows, patterns, preferences, and structural knowledge that someone would absorb over weeks or months of working here but can't get from reading a single file or function.
+Notes that capture how this team works and how this codebase behaves. Focus on decisions, workflows, architectural patterns, maintainer preferences, and things that have gone wrong. Code style and formatting are the least valuable -- linters handle that. What matters is the stuff that changes how you approach a task, scope a change, or avoid a mistake.
 
-Good notes:
-- "Errors in this codebase are returned as values, not raised as exceptions. Functions return (result, error) tuples. New code should follow this pattern."
-- "New CLI commands need to be registered in src/commands/__init__.py. Flag definitions go in a separate module from command logic -- see src/commands/build.py and src/commands/build_flags.py for the pattern."
+Good notes (these change how someone works):
 - "PRs that touch the public API need a CHANGELOG entry. No CI enforces this, but the maintainer requests it every time (PRs #34, #56, #91)."
-- "Tests are organized by feature, not by module. Parser tests live in tests/features/test_parsing.py, not tests/test_parser.py."
-- "There's a shared fixture for authenticated users: fixtures.make_user(). Three PRs have been asked to switch to it instead of rolling their own setup (#23, #41, #67)."
 - "Features land behind feature flags first. Direct additions to the main code path get pushed back in review."
-- "The config system merges three layers: defaults, env vars, and config file, in that order. New config keys need to handle all three."
+- "The config system merges three layers: defaults, env vars, and config file, in that order. New config keys need to handle all three or you'll get inconsistent behavior."
+- "Don't refactor variable names unless you're actually rewriting the line. The maintainer pushes back on this in every PR -- it obscures what actually changed (PRs #30, #45)."
+- "The retry logic was rewritten and reverted twice. The issue both times was timeout=0 combined with max_retries=None. Any change to retry behavior needs to test that edge case."
+- "Options flow through a non-obvious path: decorator -> Parameter.__init__ -> type_cast_value -> Context.invoke. Changes to option handling usually need to touch all four."
+- "This area is deliberately kept internal. Three PRs tried to expose the resolver publicly and all were rejected (PRs #45, #67, #89). The maintainer wants a safer wrapper instead."
 
-Bad notes:
-- "This file has high churn." (So what? What should I do differently?)
-- "Consider adding tests." (Generic. Applies to every repo.)
-- "This module is complex." (Not actionable.)
-- "The codebase uses Python." (Obvious from reading it.)
+Bad notes (don't bother):
+- "This file has high churn." (So what?)
+- "Use super() without arguments." (Generic Python, not repo-specific.)
+- "All files import typing as t." (Obvious from reading any file.)
+- "Tests use pytest." (Obvious.)
+- "Ruff is configured with rules B, E, F." (Just reading pyproject.toml.)
+- "Use from __future__ import annotations." (Visible in every file.)
 
-The test: would someone who's been on the team for six months already know this? If yes, it's the kind of thing you should capture. Would someone know it from spending ten minutes reading the file? If yes, don't bother.
+The filter: if a linter, formatter, or 10 minutes of reading the code would tell you the same thing, skip it. Focus on what you can only learn from history, reviews, and understanding how the pieces connect.
+
+## What to investigate
+
+Prioritize in this order:
+
+1. **Review patterns**: What do reviewers consistently push back on? What do they always ask for? These encode the team's actual standards, not just what's written in docs.
+
+2. **Architectural knowledge**: How do the major subsystems connect? What are the non-obvious dependencies? Where does a seemingly local change actually ripple?
+
+3. **Failure patterns**: What has been reverted, fixed-after, or attempted and rejected? What approaches don't work here and why?
+
+4. **Workflow and process**: How do changes land? What's the PR process? What files always need updating together? What do you need to do beyond just writing code?
+
+5. **Maintainer preferences**: What does the person who approves PRs care about? What are their pet peeves? What will they always request changes on?
+
+Code style is only worth noting if it would get flagged in a review -- things a linter won't catch but a reviewer will. "Use str.format() not f-strings for translatable strings" is worth noting. "Imports are sorted" is not.
 
 ## Tools
 
-You have two categories of tools:
+**Evidence tools** query precomputed analysis from git history, PR reviews, and docs. Use get_review_patterns and get_review_comments heavily -- review history is the richest source of tribal knowledge. Also check fix-after chains, revert chains, and coupling data.
 
-**Evidence tools** query precomputed analysis from the repository's git history, PR reviews, and documentation. The deterministic pipeline has already mined the repo. Use these to find patterns -- what changes together, what gets fixed repeatedly, what reviewers flag, what the docs say.
+**Git tools** give read-only access to the repository. Use these to verify what evidence suggests and understand why patterns exist.
 
-**Git tools** give you read-only access to the repository -- file contents, blame, commit history, diffs. Use these to understand the codebase directly. Read the code. Look at how existing features are structured. See what conventions the commit history reveals.
-
-Start broad, then go deep where it matters. Understand the repo's structure, conventions, and workflows before focusing on specific areas. Spend more time on areas where the repo has its own way of doing things that differs from generic practice.
+Start with review patterns and fix-after chains -- those encode what has actually gone wrong and what reviewers actually care about. Then explore the architecture and workflows.
 
 ## Recording findings
 
-Use the record_note tool when you discover something worth capturing. Call it as you go -- don't wait until the end. Each note should stand on its own.
+Write findings to the notes file as you go. Each note should stand on its own and be grounded in specific evidence (PR numbers, commit hashes, file names).
 
 When you've finished investigating, just say so.

@@ -11,9 +11,9 @@ from pathlib import Path
 
 @dataclass
 class ModelConfig:
-    classifier: str = "openrouter/google/gemini-3-flash-preview"
+    classifier: str = "openrouter/google/gemini-3.1-flash-lite-preview"
     embedding: str = "openrouter/openai/text-embedding-3-small"
-    synthesizer: str = "openrouter/anthropic/claude-sonnet-4.6"
+    synthesizer: str = "sonnet"
 
 
 @dataclass
@@ -177,9 +177,9 @@ class GitloreConfig:
 
 DEFAULT_CONFIG_TEMPLATE = """\
 [models]
-classifier = "openrouter/google/gemini-3-flash-preview"
+classifier = "openrouter/google/gemini-3.1-flash-lite-preview"
 embedding = "openrouter/openai/text-embedding-3-small"
-synthesizer = "openrouter/anthropic/claude-sonnet-4.6"
+synthesizer = "sonnet"
 
 [build]
 since_months = 12

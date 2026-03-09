@@ -18,6 +18,7 @@ from gitlore.models import (
     BuildMetadata,
     CouplingPair,
     FileEdge,
+    KnowledgeNote,
     SourceCoverage,
 )
 from gitlore.synthesis.synthesizer import run_investigation
@@ -112,7 +113,13 @@ def build_index(
     )
     con.print(f"  Investigation complete: [bold]{len(notes)}[/bold] notes recorded")
 
-    # 7. Store index
+    # 7. Embed notes for semantic retrieval
+    if notes and config.models.embedding and os.environ.get("OPENROUTER_API_KEY", ""):
+        with con.status(f"Embedding {len(notes)} notes..."):
+            _embed_notes(notes, config.models.embedding)
+        con.print(f"  Embedded [bold]{len(notes)}[/bold] notes")
+
+    # 8. Store index
     metadata = BuildMetadata(
         repo_path=config.repo_path,
         built_at=datetime.now(UTC),
@@ -240,6 +247,16 @@ def _run_review_enrichment(
             return
 
     console.print(f"  Found [bold]{len(analysis.comment_clusters)}[/bold] review themes")
+
+
+def _embed_notes(notes: list[KnowledgeNote], embedding_model: str) -> None:
+    """Embed note text + anchors for semantic retrieval."""
+    from gitlore.utils.llm import embed
+
+    texts = [f"{n.text} {' '.join(n.anchors)}" for n in notes]
+    embeddings = asyncio.run(embed(embedding_model, texts))
+    for note, emb in zip(notes, embeddings):
+        note.embedding = emb
 
 
 def _build_file_edges(pairs: list[CouplingPair]) -> list[FileEdge]:

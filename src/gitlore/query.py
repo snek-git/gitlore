@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
+import os
 import re
 from pathlib import Path
 
@@ -52,7 +55,8 @@ def build_planning_brief(
     finally:
         store.close()
 
-    ranked = _rank_notes(notes, query, related_files, fts_scores)
+    query_embedding = _embed_query(query, config)
+    ranked = _rank_notes(notes, query, related_files, fts_scores, query_embedding)
     planning_notes = [
         PlanningNote(
             text=note.text,
@@ -120,15 +124,60 @@ def _collect_related_files(store: IndexStore, files: list[str]) -> list[RelatedF
     return sorted(related.values(), key=lambda item: (-item.score, item.path))
 
 
+# ── Semantic retrieval ────────────────────────────────────────────────────
+
+
+def _embed_query(query: PlanningQuery, config: GitloreConfig) -> list[float] | None:
+    """Embed the query text for semantic matching. Returns None if unavailable."""
+    if not config.models.embedding or not os.environ.get("OPENROUTER_API_KEY", ""):
+        return None
+
+    query_text = f"{query.task} {query.tentative_plan} {query.question}".strip()
+    if not query_text:
+        return None
+
+    try:
+        from gitlore.utils.llm import embed
+        result = asyncio.run(embed(config.models.embedding, [query_text]))
+        return result[0] if result else None
+    except Exception:
+        return None
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a < 1e-9 or norm_b < 1e-9:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _semantic_match(
+    note_embedding: list[float] | None,
+    query_embedding: list[float] | None,
+) -> float:
+    """Cosine similarity between note and query embeddings, or 0.0 if unavailable."""
+    if note_embedding is None or query_embedding is None:
+        return 0.0
+    return max(0.0, _cosine_similarity(note_embedding, query_embedding))
+
+
+# ── Ranking ───────────────────────────────────────────────────────────────
+
+
 def _rank_notes(
     notes: list[KnowledgeNote],
     query: PlanningQuery,
     related_files: list[RelatedFile],
     fts_scores: dict[str, float],
+    query_embedding: list[float] | None = None,
 ) -> list[KnowledgeNote]:
     tokens = _query_tokens(query)
     token_set = set(tokens)
     related_scores = {item.path: item.score for item in related_files}
+    has_embeddings = query_embedding is not None and any(n.embedding is not None for n in notes)
 
     scored: list[tuple[float, KnowledgeNote]] = []
     for note in notes:
@@ -136,16 +185,28 @@ def _rank_notes(
         graph_match = _graph_match(note.anchors, related_scores)
         lexical = _lexical_match(note, token_set)
         fts = fts_scores.get(note.id, 0.0)
+        semantic = _semantic_match(note.embedding, query_embedding) if has_embeddings else 0.0
         confidence = CONFIDENCE_WEIGHT.get(note.confidence, 0.6)
 
-        score = (
-            0.40 * anchor_match
-            + 0.25 * max(lexical, fts)
-            + 0.15 * graph_match
-            + 0.10 * confidence
-            + 0.10 * (1.0 if anchor_match or lexical or fts else 0.0)
-        )
-        if score <= 0.05 and not anchor_match and not lexical and not fts:
+        if has_embeddings:
+            score = (
+                0.30 * anchor_match
+                + 0.20 * max(lexical, fts)
+                + 0.20 * semantic
+                + 0.12 * graph_match
+                + 0.10 * confidence
+                + 0.08 * (1.0 if anchor_match or lexical or fts or semantic > 0.5 else 0.0)
+            )
+        else:
+            score = (
+                0.40 * anchor_match
+                + 0.25 * max(lexical, fts)
+                + 0.15 * graph_match
+                + 0.10 * confidence
+                + 0.10 * (1.0 if anchor_match or lexical or fts else 0.0)
+            )
+
+        if score <= 0.05 and not anchor_match and not lexical and not fts and semantic < 0.3:
             continue
         scored.append((score, note))
 
@@ -169,7 +230,6 @@ def _anchor_match(query_files: list[str], anchors: list[str]) -> float:
     anchor_names = {Path(item).name for item in anchors}
     if query_names & anchor_names:
         return 0.5
-    # directory prefix match
     for qf in query_files:
         for anchor in anchors:
             if qf.startswith(anchor.rstrip("/") + "/") or anchor.startswith(qf.rstrip("/") + "/"):

@@ -1,12 +1,14 @@
 # gitlore
 
-Tribal knowledge extractor for software repositories. gitlore mines git history, PR reviews, and repo docs to surface the knowledge that experienced contributors carry in their heads -- how work actually gets done here, what reviewers care about, what approaches have failed, and what the code won't tell you by itself.
+Context engineering tool that extracts tribal knowledge from git history and PR reviews. gitlore builds the context that makes agents and developers work like experienced contributors -- surfacing what the code won't tell you by itself.
 
 ## Vision
 
-gitlore is a source of senior-level tribal knowledge extracted from git/github and other sources. The goal is not to prevent bugs or flag risks -- it's to make agents and developers behave like someone who's been on the team for six months. Write code that fits. Make PRs that don't get 15 review comments. Know the workflows, the patterns, the unwritten rules.
+Agents are capable but lack context. They don't know how work gets done in a specific repo -- the workflows, the reviewer preferences, the approaches that have been tried and rejected, the files that always need updating together. gitlore is a context engineering tool that closes this gap by extracting tribal knowledge from repository history and making it retrievable at the right moment.
 
-All product decisions should serve this vision. If a feature doesn't help someone produce work that looks like it came from an experienced contributor, it doesn't belong.
+The goal is not code analysis or bug prevention. It's making the consumer -- whether an agent or a human -- behave like someone who's been on the team for six months. Write code that fits. Make PRs that don't get 15 review comments. Know the unwritten rules.
+
+All product decisions should serve this: build the right context from history, deliver it when it matters. If a feature doesn't help someone produce work that looks like it came from an experienced contributor, it doesn't belong.
 
 ## What Counts As Useful
 

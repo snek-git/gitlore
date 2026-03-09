@@ -1,6 +1,6 @@
 # gitlore
 
-Extract tribal knowledge from any git repository. gitlore mines commit history, PR reviews, and repo docs to produce the kind of knowledge that experienced contributors carry in their heads -- then makes it available to agents and developers via MCP, CLI, and stable exports.
+Context engineering tool that extracts tribal knowledge from git history and PR reviews. gitlore builds the context that makes agents and developers work like experienced contributors -- then delivers it via MCP, CLI, and stable exports like AGENTS.md.
 
 ## What it does
 

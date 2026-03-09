@@ -4,7 +4,7 @@ Technical architecture reference for contributors.
 
 ## Product Model
 
-gitlore extracts tribal knowledge from repositories -- the kind of information experienced contributors carry in their heads. It is not a code analysis tool, a metrics dashboard, or a report generator. The output should help someone produce work that fits the repo's actual practices.
+gitlore is a context engineering tool. It extracts tribal knowledge from repository history and makes it retrievable at the moment someone needs it -- during planning, editing, or review. The output is not analysis or metrics. It's the context that makes an agent or developer behave like an experienced contributor.
 
 Two runtime modes:
 

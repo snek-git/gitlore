@@ -4,9 +4,11 @@ Context engineering tool that extracts tribal knowledge from git history and PR 
 
 ## Vision
 
-Agents are capable but lack context. They don't know how work gets done in a specific repo -- the workflows, the reviewer preferences, the approaches that have been tried and rejected, the files that always need updating together. gitlore is a context engineering tool that closes this gap by extracting tribal knowledge from repository history and making it retrievable at the right moment.
+Agents are capable but dumb about context. They don't know how work gets done in a specific repo -- the workflows, the reviewer preferences, the approaches that have been tried and rejected, the files that always need updating together. The problem isn't preventing mistakes; it's that agents (and new contributors) don't fit in. gitlore closes this gap by extracting tribal knowledge from repository history and making it retrievable at the right moment.
 
 The goal is not code analysis or bug prevention. It's making the consumer -- whether an agent or a human -- behave like someone who's been on the team for six months. Write code that fits. Make PRs that don't get 15 review comments. Know the unwritten rules.
+
+The knowledge is general-purpose. Don't narrow it to one use case. The same tribal knowledge is useful for writing code, reviewing PRs, onboarding, debugging, exporting to CLAUDE.md/AGENTS.md, and anything else where "how does this team work" matters.
 
 All product decisions should serve this: build the right context from history, deliver it when it matters. If a feature doesn't help someone produce work that looks like it came from an experienced contributor, it doesn't belong.
 
@@ -41,7 +43,7 @@ git history + PR reviews + docs
   -> retrieval via MCP, CLI, or export
 ```
 
-The deterministic analysis pipeline (extractors, analyzers) is the agent's toolkit, not its input feed. The agent decides what to investigate, what matters, and what to skip.
+The deterministic analysis pipeline (extractors, analyzers) is lead generation, not the product. Churn stats and coupling numbers have no standalone value -- they're starting points for the agent to investigate. The agent decides what to dig into, what matters, and what to skip.
 
 ### Key modules
 
@@ -58,7 +60,7 @@ The deterministic analysis pipeline (extractors, analyzers) is the agent's toolk
 
 ### Build-time agent
 
-The agent receives evidence query tools (precomputed analysis) and git tools (read-only repo access). It investigates the repository freely -- no turn limits, no pre-digested leads, no flashcard-style one-question-at-a-time investigation. It forms its own mental model and writes notes via the Write tool to `.gitlore/notes.jsonl`.
+The agent receives evidence query tools (precomputed analysis) and git tools (read-only repo access). It investigates the repository freely -- no turn limits, no pre-digested leads, no flashcard-style one-question-at-a-time investigation. The agent is the core intelligence, not a cost center to be budgeted defensively. Turn limits are an outdated approach; let it run until it's done. It forms its own mental model and writes notes via the Write tool to `.gitlore/notes.jsonl`.
 
 The system prompt prioritizes: review patterns > architectural knowledge > failure patterns > workflows > maintainer preferences > code style (only if reviewers would flag it).
 
@@ -93,6 +95,7 @@ Default config uses Claude subscription auth for the investigation agent (`synth
 ## Conventions
 
 - The agent is the core intelligence. The deterministic pipeline is its toolkit.
+- Keep it simple. Don't add indirection layers, unnecessary abstractions, or round-trip serialization when a direct call works. If you're parsing JSON back into objects or wrapping a function call in an MCP tool for no reason, you've gone wrong.
 - Knowledge notes should be specific, evidence-backed, and repo-specific.
 - Query-time retrieval is deterministic and local. No live LLM calls.
 - Exports are secondary views over the knowledge index.

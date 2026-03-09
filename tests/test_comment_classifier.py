@@ -217,8 +217,6 @@ class TestClassifyComments:
         call_kwargs = mock_complete.call_args
         assert call_kwargs.kwargs["model"] == "my-model"
         assert call_kwargs.kwargs["temperature"] == 0.0
-        assert call_kwargs.kwargs["max_tokens"] == 100
-        assert "json_mode" not in call_kwargs.kwargs
         assert "This will NPE" in call_kwargs.kwargs["user"]
 
     @patch("gitlore.classifiers.comment_classifier.complete", new_callable=AsyncMock)

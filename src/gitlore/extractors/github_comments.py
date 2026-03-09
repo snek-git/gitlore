@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import httpx
@@ -226,6 +227,7 @@ async def fetch_review_comments(
     *,
     max_pages: int = 40,
     page_delay: float = 1.0,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[ReviewComment]:
     """Fetch merged PR review comments via GitHub GraphQL API.
 
@@ -285,6 +287,9 @@ async def fetch_review_comments(
 
             for pr_node in pr_nodes:
                 all_comments.extend(_extract_comments_from_pr(pr_node))
+
+            if on_progress is not None:
+                on_progress(len(all_comments), (page + 1) * 25)
 
             page_info = repo_data["pageInfo"]
             if not page_info["hasNextPage"]:

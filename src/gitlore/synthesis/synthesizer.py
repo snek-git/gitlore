@@ -8,11 +8,15 @@ and calls record_note to emit knowledge notes as it goes.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import re
 import warnings
 from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import (
@@ -71,6 +75,8 @@ _ALLOWED_TOOLS = [
     "mcp__git__diff_between",
     "mcp__git__list_changes",
     "mcp__git__repo_tree",
+    # Write (only .gitlore/notes.jsonl, enforced by _check_tool_permission)
+    "Write",
     # MCP evidence tools
     "mcp__evidence__get_hotspots",
     "mcp__evidence__get_coupling_for_file",
@@ -82,14 +88,22 @@ _ALLOWED_TOOLS = [
     "mcp__evidence__get_doc_snippets",
     "mcp__evidence__get_conventions",
     "mcp__evidence__get_modules",
-    "mcp__evidence__record_note",
 ]
+
+
+NOTES_FILENAME = ".gitlore/notes.jsonl"
 
 
 async def _check_tool_permission(
     tool_name: str, tool_input: dict[str, Any], context: ToolPermissionContext,
 ) -> PermissionResultAllow | PermissionResultDeny:
-    """Allow read-only tools, block destructive ones."""
+    """Allow read-only tools, block destructive ones. Write allowed only to notes file."""
+    if tool_name == "Write":
+        path = tool_input.get("file_path", "")
+        if path.endswith(NOTES_FILENAME):
+            return PermissionResultAllow()
+        return PermissionResultDeny(message=f"Write only allowed to {NOTES_FILENAME}")
+
     if tool_name in _BLOCKED_TOOLS:
         return PermissionResultDeny(message=f"Tool {tool_name} is not allowed in investigation")
 
@@ -246,6 +260,49 @@ async def _run_agent(
     )
 
 
+# ── Notes file parsing ────────────────────────────────────────────────────
+
+
+def _load_notes_from_file(path: Path) -> list[KnowledgeNote]:
+    """Parse JSONL notes file written by the agent."""
+    if not path.exists():
+        return []
+    notes: list[KnowledgeNote] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        text = str(obj.get("text", "")).strip()
+        if not text:
+            continue
+        anchors = obj.get("anchors") or []
+        if not isinstance(anchors, list):
+            anchors = [str(anchors)]
+        anchors = [str(a).strip() for a in anchors if str(a).strip()]
+        evidence = obj.get("evidence") or []
+        if not isinstance(evidence, list):
+            evidence = [str(evidence)]
+        evidence = [str(e).strip() for e in evidence if str(e).strip()]
+        confidence = str(obj.get("confidence", "medium")).lower()
+        if confidence not in ("high", "medium", "low"):
+            confidence = "medium"
+        note_id = hashlib.sha1("\0".join([text, ",".join(anchors)]).encode()).hexdigest()[:16]
+        notes.append(KnowledgeNote(
+            id=note_id,
+            text=text,
+            anchors=anchors,
+            evidence_refs=evidence,
+            confidence=confidence,
+            created_at=datetime.now(UTC),
+            search_text=" ".join([text, " ".join(anchors)]),
+        ))
+    return notes
+
+
 # ── Public API ────────────────────────────────────────────────────────────
 
 
@@ -267,25 +324,41 @@ def run_investigation(
     if _is_openrouter_model(config.models.synthesizer) and not os.environ.get("OPENROUTER_API_KEY", ""):
         return []
 
-    note_collector: list[KnowledgeNote] = []
+    notes_path = Path(repo_path) / NOTES_FILENAME
+    notes_path.parent.mkdir(parents=True, exist_ok=True)
+    if notes_path.exists():
+        notes_path.unlink()
 
-    evidence_server = create_evidence_tools_server(analysis, doc_snippets, note_collector)
+    evidence_server = create_evidence_tools_server(analysis, doc_snippets)
     git_server = create_git_tools_server(repo_path)
 
-    sources = ["git history"]
-    if analysis.classified_comments or analysis.comment_clusters:
-        sources.append("PR review comments")
+    source_lines = [f"- git history: {analysis.total_commits_analyzed} commits analyzed"]
+    if analysis.classified_comments:
+        cluster_info = ""
+        if analysis.comment_clusters:
+            cluster_info = f", {len(analysis.comment_clusters)} review themes"
+        source_lines.append(
+            f"- PR review comments: {len(analysis.classified_comments)} classified comments{cluster_info}"
+            f" (use get_review_patterns and get_review_comments)"
+        )
     if doc_snippets:
-        sources.append("repo docs/config")
+        source_lines.append(f"- repo docs/config: {len(doc_snippets)} snippets")
 
     prompt = (
         f"Repository: {repo_path}\n"
-        f"Commits analyzed: {analysis.total_commits_analyzed}\n"
-        f"Available evidence sources: {', '.join(sources)}\n"
-        "\n"
-        "Investigate this repository. Use the evidence tools to find patterns, "
-        "then use git tools to understand the codebase directly. "
-        "Record your findings with record_note as you go."
+        f"\n"
+        f"Available evidence:\n"
+        f"{chr(10).join(source_lines)}\n"
+        f"\n"
+        f"Investigate this repository. Use the evidence tools to find patterns, "
+        f"then use git tools to understand the codebase directly.\n"
+        f"\n"
+        f"Record findings by writing to {notes_path} using the Write tool. "
+        f"The file is JSONL format -- one JSON object per line. Each line must be:\n"
+        f'{{"text": "...", "anchors": ["file/path", ...], "evidence": ["...", ...], "confidence": "high|medium|low"}}\n'
+        f"\n"
+        f"Write to this file each time you discover something worth noting. "
+        f"Append new lines -- don't overwrite previous content."
     )
 
     with warnings.catch_warnings():
@@ -300,4 +373,4 @@ def run_investigation(
             )
         )
 
-    return note_collector
+    return _load_notes_from_file(notes_path)

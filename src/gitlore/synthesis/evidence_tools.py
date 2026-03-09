@@ -7,9 +7,7 @@ Also provides the record_note tool for incremental knowledge capture.
 
 from __future__ import annotations
 
-import hashlib
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -18,10 +16,7 @@ from gitlore.docs import DocSnippet
 from gitlore.models import (
     AnalysisResult,
     CommentCategory,
-    KnowledgeNote,
 )
-
-_VALID_CONFIDENCE = {"high", "medium", "low"}
 
 
 def _ok(data: Any) -> dict[str, Any]:
@@ -33,14 +28,9 @@ def _err(message: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": message}], "is_error": True}
 
 
-def _note_id(text: str, anchors: list[str]) -> str:
-    return hashlib.sha1("\0".join([text, ",".join(anchors)]).encode()).hexdigest()[:16]
-
-
 def _create_evidence_tools(
     analysis: AnalysisResult,
     doc_snippets: list[DocSnippet],
-    note_collector: list[KnowledgeNote],
 ) -> list[Any]:
     """Create all evidence query tools and the record_note tool."""
 
@@ -320,43 +310,6 @@ def _create_evidence_tools(
             )
         ])
 
-    # ── Knowledge capture tool ──────────────────────────────────────────
-
-    @tool(
-        "record_note",
-        "Record a piece of tribal knowledge about this repository. Call this whenever "
-        "you discover something worth capturing. Each note should be specific to this "
-        "repo and grounded in evidence. Notes are persisted immediately.",
-        {"text": str, "anchors": list, "evidence": list, "confidence": str},
-    )
-    async def record_note(args: dict[str, Any]) -> dict[str, Any]:
-        text = (args.get("text", "") or "").strip()
-        if not text:
-            return _err("Note text is required.")
-        anchors = args.get("anchors") or []
-        if not isinstance(anchors, list):
-            anchors = [str(anchors)]
-        anchors = [str(a).strip() for a in anchors if str(a).strip()]
-        evidence = args.get("evidence") or []
-        if not isinstance(evidence, list):
-            evidence = [str(evidence)]
-        evidence = [str(e).strip() for e in evidence if str(e).strip()]
-        confidence = str(args.get("confidence", "medium")).lower()
-        if confidence not in _VALID_CONFIDENCE:
-            confidence = "medium"
-
-        note = KnowledgeNote(
-            id=_note_id(text, anchors),
-            text=text,
-            anchors=anchors,
-            evidence_refs=evidence,
-            confidence=confidence,
-            created_at=datetime.now(UTC),
-            search_text=" ".join([text, " ".join(anchors)]),
-        )
-        note_collector.append(note)
-        return _ok(f"Recorded note ({confidence}): {text[:80]}...")
-
     return [
         get_hotspots,
         get_coupling_for_file,
@@ -368,20 +321,15 @@ def _create_evidence_tools(
         get_doc_snippets,
         get_conventions,
         get_modules,
-        record_note,
     ]
 
 
 def create_evidence_tools_server(
     analysis: AnalysisResult,
     doc_snippets: list[DocSnippet],
-    note_collector: list[KnowledgeNote],
 ) -> Any:
-    """Create an MCP server with evidence query tools and the record_note tool.
-
-    The note_collector list is populated by the agent's record_note calls.
-    """
-    tools = _create_evidence_tools(analysis, doc_snippets, note_collector)
+    """Create an MCP server with evidence query tools."""
+    tools = _create_evidence_tools(analysis, doc_snippets)
     return create_sdk_mcp_server(
         name="evidence",
         version="1.0.0",

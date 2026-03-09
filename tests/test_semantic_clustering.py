@@ -104,12 +104,12 @@ class TestComputeCoherence:
 class TestClusterEmbeddings:
     def test_finds_clusters_in_clear_data(self):
         rng = np.random.default_rng(42)
-        # Two tight clusters
-        cluster_a = rng.normal(loc=0.0, scale=0.1, size=(10, 5))
-        cluster_b = rng.normal(loc=5.0, scale=0.1, size=(10, 5))
+        # Two tight clusters (cosine-separable: different directions)
+        cluster_a = rng.normal(loc=[1, 0, 0, 0, 0], scale=0.05, size=(20, 5))
+        cluster_b = rng.normal(loc=[0, 0, 0, 0, 1], scale=0.05, size=(20, 5))
         data = np.vstack([cluster_a, cluster_b])
         labels = _cluster_embeddings(data)
-        assert len(labels) == 20
+        assert len(labels) == 40
         # Should find at least 1 cluster (may find 2)
         unique = set(labels)
         unique.discard(-1)
@@ -140,11 +140,13 @@ class TestClusterComments:
     def test_clusters_similar_comments(self, mock_embed, mock_llm):
         rng = np.random.default_rng(42)
 
-        # Create embeddings with two clear clusters
-        cluster_a = rng.normal(loc=0.0, scale=0.05, size=(5, 20))
-        cluster_b = rng.normal(loc=3.0, scale=0.05, size=(5, 20))
+        # Two cosine-separable clusters with enough points
+        dim = 20
+        base_a = np.zeros(dim); base_a[0] = 1.0
+        base_b = np.zeros(dim); base_b[10] = 1.0
+        cluster_a = base_a + rng.normal(scale=0.05, size=(15, dim))
+        cluster_b = base_b + rng.normal(scale=0.05, size=(15, dim))
         embeddings = np.vstack([cluster_a, cluster_b])
-        # Normalize
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         embeddings = embeddings / norms
 
@@ -152,9 +154,9 @@ class TestClusterComments:
         mock_llm.return_value = "Use const instead of let"
 
         comments = [
-            _make_classified(f"use const here (variant {i})") for i in range(5)
+            _make_classified(f"use const here (variant {i})") for i in range(15)
         ] + [
-            _make_classified(f"add error handling (variant {i})") for i in range(5)
+            _make_classified(f"add error handling (variant {i})") for i in range(15)
         ]
 
         config = _make_model_config()

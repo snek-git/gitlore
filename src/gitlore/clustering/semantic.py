@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -11,7 +12,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from gitlore.config import ModelConfig
 from gitlore.models import ClassifiedComment, CommentCluster
-from gitlore.prompts import load as load_prompt
 from gitlore.utils.llm import complete_sync
 
 TYPE_CHECKING = False
@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Minimum comments needed to attempt clustering
 MIN_COMMENTS_FOR_CLUSTERING = 5
 
 
@@ -33,11 +32,9 @@ def _get_embeddings(
     from gitlore.utils.llm import embed
 
     embedding_model = model_config.embedding
-    # Strip "local/" prefix if present (legacy config compat)
     if embedding_model.startswith("local/"):
-        embedding_model = embedding_model[len("local/") :]
+        embedding_model = embedding_model[len("local/"):]
 
-    # Check cache first
     if cache is not None:
         cached = cache.get_embeddings(embedding_model, texts)
         if cached is not None:
@@ -45,7 +42,6 @@ def _get_embeddings(
 
     embeddings = asyncio.run(embed(embedding_model, texts))
 
-    # Store in cache
     if cache is not None:
         cache.set_embeddings(embedding_model, texts, embeddings)
 
@@ -70,14 +66,15 @@ def _prepare_texts(comments: list[ClassifiedComment], model_config: ModelConfig)
 def _cluster_embeddings(embeddings: NDArray[np.float64]) -> NDArray[np.int64]:
     """Run HDBSCAN clustering directly on embeddings with cosine metric."""
     n_samples = embeddings.shape[0]
-    min_cluster_size = min(3, n_samples)
-    min_samples = min(2, n_samples)
+    min_cluster_size = max(5, n_samples // 100)
+    min_samples = max(2, min_cluster_size // 3)
 
     clusterer = HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
         metric="cosine",
-        cluster_selection_method="eom",
+        cluster_selection_epsilon=0.3,
+        cluster_selection_method="leaf",
     )
     labels: NDArray[np.int64] = clusterer.fit_predict(embeddings)
     return labels
@@ -91,70 +88,106 @@ def _compute_coherence(
         return 1.0
     cluster_embeddings = embeddings[indices]
     sim_matrix = cosine_similarity(cluster_embeddings)
-    # Average of upper triangle (excluding diagonal)
     n = sim_matrix.shape[0]
     upper_sum = float(np.sum(np.triu(sim_matrix, k=1)))
     n_pairs = n * (n - 1) / 2
     return upper_sum / n_pairs
 
 
-def _label_cluster(
+def _format_comment_for_summary(cc: ClassifiedComment) -> str:
+    """Format a single classified comment with its context for the summarizer."""
+    c = cc.comment
+    parts = [f"[PR #{c.pr_number}]"]
+    if c.file_path:
+        parts.append(f"[{c.file_path}")
+        if c.line:
+            parts[-1] += f":{c.line}"
+        parts[-1] += "]"
+    if c.review_state:
+        parts.append(f"[{c.review_state}]")
+    cats = [cat.value for cat in cc.categories]
+    if cats:
+        parts.append(f"({', '.join(cats)})")
+    parts.append(f"\n{c.body}")
+    if c.diff_context:
+        parts.append(f"\nDiff context:\n{c.diff_context[:400]}")
+    if c.thread_comments:
+        for reply in c.thread_comments[:3]:
+            parts.append(f"\nReply: {reply[:300]}")
+    return " ".join(parts[:3]) + "".join(parts[3:])
+
+
+def _summarize_cluster(
     comments: list[ClassifiedComment],
     model: str,
 ) -> str:
-    """Use an LLM to generate a human-readable label for a cluster."""
-    sample = comments[:10]
-    bodies = "\n".join(f"- {c.comment.body}" for c in sample)
+    """Summarize a cluster of review comments into a recurring theme description."""
+    formatted = "\n\n---\n\n".join(
+        _format_comment_for_summary(c) for c in comments
+    )
 
-    system = load_prompt("cluster_label_system")
-    user = load_prompt("cluster_label_user").format(bodies=bodies)
+    system = (
+        "You analyze groups of PR review comments from the same repository that were "
+        "clustered together because they express similar concerns. You receive the full "
+        "comment text, diff context, and thread replies.\n\n"
+        "Produce a short summary (2-4 sentences) of the recurring reviewer concern this "
+        "cluster represents. Focus on what reviewers consistently care about and why. "
+        "Be specific to this codebase, not generic.\n\n"
+        "First line: a short label (5-15 words).\n"
+        "Then: the summary."
+    )
+    user = (
+        f"This cluster contains {len(comments)} review comments. "
+        f"Summarize the recurring concern.\n\n{formatted}"
+    )
 
     try:
-        label = complete_sync(
+        result = complete_sync(
             model=model,
             system=system,
             user=user,
             temperature=0.0,
-            max_tokens=50,
         )
-        return label.strip().strip('"').strip("'")
+        return result.strip()
     except Exception:
-        logger.warning("Failed to label cluster, using fallback")
+        logger.warning("Failed to summarize cluster, using fallback")
         return f"Pattern ({len(comments)} comments)"
+
+
+# Progress callback type: (stage, completed, total)
+# stage is "embed", "cluster", or "summarize"
+ClusterProgressFn = Callable[[str, int, int], None]
 
 
 def cluster_comments(
     classified: list[ClassifiedComment],
     model_config: ModelConfig,
     cache: Cache | None = None,
+    on_progress: ClusterProgressFn | None = None,
 ) -> list[CommentCluster]:
     """Cluster classified comments by semantic similarity.
 
-    Pipeline: embed -> HDBSCAN cluster (cosine metric) -> LLM label.
-
-    Args:
-        classified: List of classified review comments.
-        model_config: Model configuration for embedding and labeling.
-
-    Returns:
-        List of CommentCluster with labels, coherence scores, and centroids.
+    Pipeline: embed -> HDBSCAN cluster -> LLM summarize per cluster.
     """
     if len(classified) < MIN_COMMENTS_FOR_CLUSTERING:
-        logger.info(
-            "Too few comments for clustering (%d < %d)",
-            len(classified),
-            MIN_COMMENTS_FOR_CLUSTERING,
-        )
         return []
 
-    # 1. Prepare texts and embed
+    def _progress(stage: str, done: int, total: int) -> None:
+        if on_progress is not None:
+            on_progress(stage, done, total)
+
+    # 1. Embed
+    _progress("embed", 0, len(classified))
     texts = _prepare_texts(classified, model_config)
     embeddings = _get_embeddings(texts, model_config, cache)
+    _progress("embed", len(classified), len(classified))
 
-    # 2. Cluster (HDBSCAN with cosine metric directly on embeddings)
+    # 2. Cluster
+    _progress("cluster", 0, 1)
     labels = _cluster_embeddings(embeddings)
+    _progress("cluster", 1, 1)
 
-    # 4. Group comments by cluster, skip noise (label == -1)
+    # 3. Group by cluster, skip noise
     cluster_indices: dict[int, list[int]] = {}
     for i, label in enumerate(labels):
         if label == -1:
@@ -162,25 +195,18 @@ def cluster_comments(
         cluster_indices.setdefault(int(label), []).append(i)
 
     if not cluster_indices:
-        logger.info("No clusters found (all comments classified as noise)")
         return []
 
-    noise_count = int(np.sum(labels == -1))
-    logger.info(
-        "Found %d clusters, %d noise comments out of %d total",
-        len(cluster_indices),
-        noise_count,
-        len(classified),
-    )
-
-    # 5. Build CommentCluster objects with coherence and LLM labels
+    # 4. Summarize each cluster
+    total_clusters = len(cluster_indices)
     clusters: list[CommentCluster] = []
-    for cluster_id, indices in sorted(cluster_indices.items()):
+    for idx, (cluster_id, indices) in enumerate(sorted(cluster_indices.items())):
+        _progress("summarize", idx, total_clusters)
+
         cluster_comments_list = [classified[i] for i in indices]
         coherence = _compute_coherence(embeddings, indices)
         centroid = np.mean(embeddings[indices], axis=0).tolist()
-
-        label = _label_cluster(cluster_comments_list, model_config.classifier)
+        label = _summarize_cluster(cluster_comments_list, model_config.classifier)
 
         clusters.append(
             CommentCluster(
@@ -192,4 +218,5 @@ def cluster_comments(
             )
         )
 
+    _progress("summarize", total_clusters, total_clusters)
     return clusters

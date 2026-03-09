@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
-from gitlore.models import AnalysisResult, ChurnHotspot, KnowledgeNote
+from gitlore.models import AnalysisResult, ChurnHotspot
 from gitlore.synthesis.evidence_tools import create_evidence_tools_server
+from gitlore.synthesis.synthesizer import _load_notes_from_file
 
 
 def _make_analysis() -> AnalysisResult:
@@ -27,48 +30,50 @@ def _make_analysis() -> AnalysisResult:
     )
 
 
-def test_evidence_tools_get_hotspots():
-    """Evidence tools should return hotspot data from analysis."""
-    import asyncio
-
+def test_evidence_tools_created():
+    """Evidence tools server should be created from analysis."""
     analysis = _make_analysis()
-    collector: list[KnowledgeNote] = []
-    server = create_evidence_tools_server(analysis, [], collector)
-
-    # The server exposes tools; verify it was created
+    server = create_evidence_tools_server(analysis, [])
     assert server is not None
 
 
-def test_record_note_populates_collector():
-    """The record_note tool should append notes to the collector list."""
-    import asyncio
+def test_load_notes_from_jsonl(tmp_path: Path):
+    """Notes should be parsed from a JSONL file."""
+    notes_file = tmp_path / "notes.jsonl"
+    notes_file.write_text(
+        json.dumps({"text": "Test note", "anchors": ["src/foo.py"], "evidence": ["commit abc"], "confidence": "high"}) + "\n"
+        + json.dumps({"text": "Another note", "anchors": [], "evidence": [], "confidence": "medium"}) + "\n"
+    )
 
-    from gitlore.synthesis.evidence_tools import _create_evidence_tools
+    notes = _load_notes_from_file(notes_file)
+    assert len(notes) == 2
+    assert notes[0].text == "Test note"
+    assert notes[0].confidence == "high"
+    assert notes[0].anchors == ["src/foo.py"]
+    assert notes[0].evidence_refs == ["commit abc"]
+    assert notes[1].text == "Another note"
+    assert notes[1].confidence == "medium"
 
-    analysis = _make_analysis()
-    collector: list[KnowledgeNote] = []
-    tools = _create_evidence_tools(analysis, [], collector)
 
-    # Find the record_note tool
-    record_note = None
-    for t in tools:
-        if t.name == "record_note":
-            record_note = t
-            break
-    assert record_note is not None
+def test_load_notes_skips_bad_lines(tmp_path: Path):
+    """Bad JSON lines and empty text should be skipped."""
+    notes_file = tmp_path / "notes.jsonl"
+    notes_file.write_text(
+        "not json\n"
+        + json.dumps({"text": "", "anchors": []}) + "\n"
+        + json.dumps({"text": "Valid note", "anchors": ["a.py"], "confidence": "low"}) + "\n"
+    )
 
-    # Call it
-    result = asyncio.run(record_note.handler({
-        "text": "src/client.py has high churn with 30% fix ratio.",
-        "anchors": ["src/client.py"],
-        "evidence": ["hotspot: 20 commits, 30% fixes"],
-        "confidence": "high",
-    }))
-    assert not result.get("is_error")
-    assert len(collector) == 1
-    assert collector[0].text == "src/client.py has high churn with 30% fix ratio."
-    assert collector[0].confidence == "high"
-    assert collector[0].anchors == ["src/client.py"]
+    notes = _load_notes_from_file(notes_file)
+    assert len(notes) == 1
+    assert notes[0].text == "Valid note"
+    assert notes[0].confidence == "low"
+
+
+def test_load_notes_missing_file(tmp_path: Path):
+    """Missing file should return empty list."""
+    notes = _load_notes_from_file(tmp_path / "nonexistent.jsonl")
+    assert notes == []
 
 
 def test_run_investigation_returns_empty_without_api_key(monkeypatch):

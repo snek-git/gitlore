@@ -10,9 +10,20 @@ import litellm
 
 log = logging.getLogger("gitlore.llm")
 
-# Defaults
+# Suppress litellm's noisy stderr spam
+litellm.suppress_debug_info = True
+logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+logging.getLogger("litellm").setLevel(logging.CRITICAL)
+logging.getLogger("LiteLLM Router").setLevel(logging.CRITICAL)
+logging.getLogger("LiteLLM Proxy").setLevel(logging.CRITICAL)
+
 litellm.num_retries = 3
 litellm.request_timeout = 60
+
+# Also suppress Python-level RuntimeWarnings from litellm's async internals
+import warnings
+warnings.filterwarnings("ignore", message="coroutine.*was never awaited")
+warnings.filterwarnings("ignore", category=FutureWarning, module="sklearn")
 
 
 async def complete(
@@ -20,7 +31,6 @@ async def complete(
     system: str,
     user: str,
     temperature: float = 0.3,
-    max_tokens: int = 4096,
     json_mode: bool = False,
 ) -> str:
     """Async LLM completion, returns the content string."""
@@ -31,30 +41,12 @@ async def complete(
             {"role": "user", "content": user},
         ],
         "temperature": temperature,
-        "max_tokens": max_tokens,
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    log.debug(
-        "LLM CALL → model=%s temp=%.1f max_tokens=%d json_mode=%s\n"
-        "── SYSTEM ──\n%s\n"
-        "── USER ──\n%s",
-        model, temperature, max_tokens, json_mode, system, user,
-    )
-
     response = await litellm.acompletion(**kwargs)
     content = response.choices[0].message.content or ""
-    usage = getattr(response, "usage", None)
-
-    log.debug(
-        "LLM RESPONSE ← model=%s tokens=%s\n"
-        "── CONTENT ──\n%s",
-        model,
-        f"in={usage.prompt_tokens} out={usage.completion_tokens}" if usage else "n/a",
-        content,
-    )
-
     return content
 
 
@@ -63,24 +55,13 @@ def complete_sync(
     system: str,
     user: str,
     temperature: float = 0.3,
-    max_tokens: int = 4096,
     json_mode: bool = False,
 ) -> str:
     """Synchronous wrapper around async complete."""
-    return asyncio.run(
-        complete(model, system, user, temperature, max_tokens, json_mode)
-    )
+    return asyncio.run(complete(model, system, user, temperature, json_mode))
 
 
 async def embed(model: str, texts: list[str]) -> list[list[float]]:
-    """Get embeddings via litellm (for API-based models)."""
-    log.debug("EMBED CALL → model=%s texts=%d", model, len(texts))
+    """Get embeddings via litellm."""
     response = await litellm.aembedding(model=model, input=texts)
-    usage = getattr(response, "usage", None)
-    log.debug(
-        "EMBED RESPONSE ← model=%s tokens=%s vectors=%d",
-        model,
-        f"in={usage.prompt_tokens}" if usage else "n/a",
-        len(response.data),
-    )
     return [item["embedding"] for item in response.data]

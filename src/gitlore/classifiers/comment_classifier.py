@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Callable
 
 from gitlore.models import ClassifiedComment, CommentCategory, ReviewComment
 from gitlore.prompts import load as load_prompt
@@ -87,7 +88,6 @@ async def _classify_one(
             system=load_prompt("classifier_system"),
             user=user_msg,
             temperature=0.0,
-            max_tokens=100,
         )
         categories, confidence = _parse_classification(raw)
 
@@ -111,8 +111,9 @@ async def classify_comments(
     comments: list[ReviewComment],
     model: str,
     *,
-    max_concurrent: int = 20,
+    max_concurrent: int = 8,
     cache: Cache | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[ClassifiedComment]:
     """Classify a list of review comments using an LLM.
 
@@ -121,6 +122,7 @@ async def classify_comments(
         model: LiteLLM model identifier (e.g. "openrouter/deepseek/deepseek-chat").
         max_concurrent: Maximum concurrent LLM requests.
         cache: Optional SQLite cache for classification results.
+        on_progress: Called with (completed, total) after each comment.
 
     Returns:
         List of ClassifiedComment with assigned categories and confidence scores.
@@ -128,8 +130,19 @@ async def classify_comments(
     if not comments:
         return []
 
+    total = len(comments)
+    completed = 0
+
+    async def _classify_with_progress(comment: ReviewComment) -> ClassifiedComment:
+        nonlocal completed
+        result = await _classify_one(comment, model, semaphore, cache)
+        completed += 1
+        if on_progress is not None:
+            on_progress(completed, total)
+        return result
+
     semaphore = asyncio.Semaphore(max_concurrent)
-    tasks = [_classify_one(c, model, semaphore, cache) for c in comments]
+    tasks = [_classify_with_progress(c) for c in comments]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     classified: list[ClassifiedComment] = []

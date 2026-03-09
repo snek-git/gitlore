@@ -101,7 +101,11 @@ async def _check_tool_permission(
     return PermissionResultAllow()
 
 
-# ── OpenRouter configuration ──────────────────────────────────────────────
+# ── Model configuration ───────────────────────────────────────────────────
+
+
+def _is_openrouter_model(model: str) -> bool:
+    return model.startswith("openrouter/")
 
 
 def _configure_openrouter_env(model: str) -> None:
@@ -109,13 +113,20 @@ def _configure_openrouter_env(model: str) -> None:
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         raise RuntimeError(
-            "OPENROUTER_API_KEY not set. Required for agentic investigation via OpenRouter."
+            "OPENROUTER_API_KEY not set. Required for OpenRouter models."
         )
     or_model = model.removeprefix("openrouter/")
     os.environ["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api"
     os.environ["ANTHROPIC_AUTH_TOKEN"] = api_key
     os.environ["ANTHROPIC_API_KEY"] = ""
     os.environ["ANTHROPIC_DEFAULT_SONNET_MODEL"] = or_model
+
+
+def _resolve_model(model: str) -> str | None:
+    """Return the model ID to pass to the CLI, or None to use the CLI default."""
+    if _is_openrouter_model(model):
+        return None  # OpenRouter sets ANTHROPIC_DEFAULT_SONNET_MODEL via env
+    return model or None
 
 
 async def _prompt_stream(text: str):  # type: ignore[no-untyped-def]
@@ -149,7 +160,10 @@ async def _run_agent(
     """
     _print: Callable[[str], None] = _log_fn if callable(_log_fn) else lambda _: None
 
-    _configure_openrouter_env(model)
+    if _is_openrouter_model(model):
+        _configure_openrouter_env(model)
+
+    resolved_model = _resolve_model(model)
 
     stderr_lines: list[str] = []
 
@@ -162,6 +176,7 @@ async def _run_agent(
         stderr_lines.clear()
         options = ClaudeAgentOptions(
             system_prompt=load_prompt(system_prompt_name),
+            model=resolved_model,
             mcp_servers=mcp_servers,
             allowed_tools=_ALLOWED_TOOLS,
             permission_mode="bypassPermissions",
@@ -247,7 +262,9 @@ def run_investigation(
     The agent receives evidence tools (querying precomputed analysis) and git
     tools (read-only repo access). It calls record_note as it discovers things.
     """
-    if not config.models.synthesizer or not os.environ.get("OPENROUTER_API_KEY", ""):
+    if not config.models.synthesizer:
+        return []
+    if _is_openrouter_model(config.models.synthesizer) and not os.environ.get("OPENROUTER_API_KEY", ""):
         return []
 
     note_collector: list[KnowledgeNote] = []

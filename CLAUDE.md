@@ -1,142 +1,97 @@
 # gitlore
 
-Agent-first context engine for planning. `gitlore` should mine git history, PR review history, and repo docs to surface the few pieces of tribal knowledge that would materially change an agent's plan.
+Tribal knowledge extractor for software repositories. gitlore mines git history, PR reviews, and repo docs to surface the knowledge that experienced contributors carry in their heads -- how work actually gets done here, what reviewers care about, what approaches have failed, and what the code won't tell you by itself.
 
-## Product Direction
+## Vision
 
-- Primary interface: MCP tool used by Codex / Claude Code during planning.
-- Secondary interface: CLI for building the index, debugging retrieval, and exporting stable repo guidance.
-- Core framing: "what objective, repo-specific planning advice would materially improve this plan?"
+gitlore is a source of senior-level tribal knowledge extracted from git/github and other sources. The goal is not to prevent bugs or flag risks -- it's to make agents and developers behave like someone who's been on the team for six months. Write code that fits. Make PRs that don't get 15 review comments. Know the workflows, the patterns, the unwritten rules.
 
-`gitlore` is not primarily a report generator and should not optimize for broad repo summaries.
+All product decisions should serve this vision. If a feature doesn't help someone produce work that looks like it came from an experienced contributor, it doesn't belong.
 
 ## What Counts As Useful
 
-Only surface information that changes one of:
+The knowledge gitlore extracts should be things you can only learn from history, reviews, and working in the codebase over time. Not things a linter catches. Not things obvious from reading a file.
 
-- scope
-- implementation approach
-- validation plan
-- review-readiness
+Good:
+- "PRs that touch the public API need a CHANGELOG entry. No CI enforces this, but the maintainer requests it every time."
+- "Don't refactor variable names unless you're rewriting the line. The maintainer pushes back on this in every PR."
+- "The retry logic was rewritten and reverted twice. The issue both times was timeout=0 + max_retries=None."
+- "Features land behind feature flags first. Direct additions to the main code path get pushed back."
+- "Options flow through a non-obvious path: decorator -> Parameter.__init__ -> type_cast_value -> Context.invoke."
 
-Good examples:
+Bad:
+- "This file has high churn." (So what?)
+- "Use super() without arguments." (Generic Python, not repo-specific.)
+- "Imports are sorted." (Linter handles it.)
+- "The codebase uses pytest." (Obvious.)
 
-- "When editing `X`, also inspect `Y` and `Z`."
-- "This area repeatedly regresses on default / `None` / flag interactions."
-- "Maintainers push back on exposing this internal concept publicly."
-- "Bugfixes here usually need changelog or docs updates."
+Code style is only worth noting if a reviewer would flag it -- things a linter won't catch but a human will.
 
-Bad examples:
+## Architecture
 
-- generic docs excerpts
-- broad repo summaries
-- praise / merge chatter
-- one-off comments without repeated evidence
-- generic coding advice
+```
+git history + PR reviews + docs
+  -> deterministic extraction + analysis (fast, minutes)
+  -> evidence stored in memory as AnalysisResult
+  -> single agent session with evidence tools + git tools
+  -> agent investigates freely, writes notes to .gitlore/notes.jsonl
+  -> notes embedded and stored in .gitlore/index.db
+  -> retrieval via MCP, CLI, or export
+```
 
-## Planning-Time Use
+The deterministic analysis pipeline (extractors, analyzers) is the agent's toolkit, not its input feed. The agent decides what to investigate, what matters, and what to skip.
 
-The intended runtime flow is:
+### Key modules
 
-1. Agent drafts a tentative plan.
-2. Agent calls `gitlore` during plan mode via MCP.
-3. `gitlore` returns a small planning brief: a few high-signal planning notes, not a long dump.
-4. Agent revises the plan before editing.
+- `src/gitlore/extractors/` -- git log parsing, GitHub PR comment fetching
+- `src/gitlore/analyzers/` -- churn hotspots, coupling, fix-after chains, reverts, conventions
+- `src/gitlore/classifiers/` -- LLM classification of review comments
+- `src/gitlore/clustering/` -- semantic clustering of review comments with HDBSCAN + LLM summarization
+- `src/gitlore/synthesis/` -- build-time agent session (Claude Agent SDK), evidence query tools, git tools
+- `src/gitlore/build.py` -- build orchestration
+- `src/gitlore/query.py` -- retrieval with FTS + semantic + anchor matching
+- `src/gitlore/index.py` -- SQLite index store
+- `src/gitlore/mcp_server.py` -- MCP tool exposure
+- `src/gitlore/export.py` -- AGENTS.md, CLAUDE.md, cursor rules, etc.
 
-`gitlore` should be a planning-time advisor tool, not a separate ritual the user has to remember before planning.
+### Build-time agent
 
-## Build vs Query
+The agent receives evidence query tools (precomputed analysis) and git tools (read-only repo access). It investigates the repository freely -- no turn limits, no pre-digested leads, no flashcard-style one-question-at-a-time investigation. It forms its own mental model and writes notes via the Write tool to `.gitlore/notes.jsonl`.
 
-### Build
+The system prompt prioritizes: review patterns > architectural knowledge > failure patterns > workflows > maintainer preferences > code style (only if reviewers would flag it).
 
-`build` is the expensive, agentic stage.
+### Retrieval
 
-- deterministic pre-pass mines git, PR reviews, docs, config
-- candidate leads are generated from hotspots, coupling, fix-after chains, reverts, review patterns, and docs
-- Claude Agent SDK investigates the top leads with read-only git tools
-- output is structured planning knowledge with evidence, not prose report sections
+Query-time retrieval is cheap and local:
+- Anchor matching (file path overlap)
+- FTS (full-text search via SQLite FTS5)
+- Semantic similarity (cosine on embedded notes, when embeddings available)
+- Graph expansion (coupling edges for related files)
+- Confidence weighting
 
-This is where agentic reasoning belongs.
-
-### Query / MCP
-
-Planning-time query should be cheap.
-
-- retrieve relevant planning knowledge for the current task, files, and tentative plan
-- return only the few interventions most likely to improve the plan
-- avoid live "agent over everything" behavior on each query
-
-## Output Shape
-
-Do not force tribal knowledge into a rigid static taxonomy.
-
-The interface can be stable, but the content inside it should stay flexible and evidence-backed.
-
-The main payload should read like concise, evidence-backed planning advice:
-
-- what you're probably missing
-- what tends to go wrong here
-- what maintainers usually care about here
-- what else you should inspect before coding
-
-If a machine-readable envelope exists, it should stay light. The core value is in a small set of freeform, high-signal planning notes tied to evidence.
+No live LLM call at query time.
 
 ## CLI
 
-The CLI is still useful for direct use and debugging:
-
 ```bash
 uv sync --all-extras
-uv run gitlore build
-uv run gitlore advise --task "fix flaky option parsing bug" --files src/click/core.py
-uv run gitlore export --format agents_md
-uv run gitlore mcp
+uv run gitlore build                          # build the knowledge index
+uv run gitlore advise --task "fix X" --files src/x.py  # retrieve relevant notes
+uv run gitlore export --format agents_md      # export to AGENTS.md etc
+uv run gitlore mcp                            # run MCP server
 uv run pytest -x -q
 uv run ruff check src/ tests/
 uv run mypy src/
 ```
 
-## MCP
+## Configuration
 
-The main MCP tool should be planning-oriented.
-
-Desired shape:
-
-- `get_planning_brief(task, files?, diff?, tentative_plan?, question?)`
-
-Supporting tools can exist, but the main product should answer:
-
-- what should I know before I lock this plan?
-- what am I likely to miss?
-- what should I avoid?
-- what should I validate before I’m done?
-
-## Architecture
-
-Important modules:
-
-- `src/gitlore/extractors/` for git and GitHub review extraction
-- `src/gitlore/analyzers/` for deterministic lead generation
-- `src/gitlore/synthesis/` for agentic investigation with Claude Agent SDK
-- `src/gitlore/build.py` for index construction
-- `src/gitlore/query.py` for planning-time retrieval
-- `src/gitlore/mcp_server.py` for MCP tool exposure
-- `src/gitlore/export.py` for stable downstream exports
-
-The product center should be:
-
-```text
-history + review memory + docs
-  -> build-time investigation
-  -> indexed planning knowledge
-  -> planning-time MCP retrieval
-  -> better agent plans
-```
+Default config uses Claude subscription auth for the investigation agent (`synthesizer = "sonnet"`) and OpenRouter for classification/embedding. Set `OPENROUTER_API_KEY` in `.env` for the classifier and embeddings. GitHub token comes from `GITHUB_TOKEN` env or `gh auth login`.
 
 ## Conventions
 
-- Build should prefer evidence-backed planning insights over generic rules.
-- Agentic synthesis should investigate top leads, not write generic reports.
-- Query should optimize for a few strong interventions, not exhaustive retrieval.
-- Docs are supporting context, not the main product output.
-- Stable exports like `AGENTS.md` and `CLAUDE.md` are secondary views over stronger planning knowledge.
+- The agent is the core intelligence. The deterministic pipeline is its toolkit.
+- Knowledge notes should be specific, evidence-backed, and repo-specific.
+- Query-time retrieval is deterministic and local. No live LLM calls.
+- Exports are secondary views over the knowledge index.
+- The product is tribal knowledge, not metrics, reports, or code analysis.

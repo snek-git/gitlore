@@ -17,9 +17,9 @@ def create_mcp_server(config: GitloreConfig) -> FastMCP:
     server = FastMCP(
         name="gitlore",
         instructions=(
-            "Use gitlore during planning to retrieve repository-specific tribal knowledge. "
-            "Prefer get_planning_brief before editing code, get_related_files to widen scope, "
-            "and get_repo_guidance for stable repo-wide guidance."
+            "Use gitlore to retrieve repository-specific tribal knowledge. "
+            "Call get_planning_brief before editing code, get_related_files to widen scope, "
+            "and get_repo_guidance for stable repo-wide knowledge."
         ),
     )
 
@@ -53,10 +53,10 @@ def create_mcp_server(config: GitloreConfig) -> FastMCP:
             store.close()
         return "\n".join(f"{item.path}\t{item.reason}\t{item.score:.2f}" for item in related)
 
-    @server.tool(description="Return short repo-wide guidance cards.")
+    @server.tool(description="Return repo-wide knowledge notes.")
     def get_repo_guidance() -> str:
         bundle = load_export_bundle(config)
-        return guidance_to_json(bundle.cards, bundle.build_metadata)
+        return guidance_to_json(bundle.notes, bundle.build_metadata)
 
     return server
 

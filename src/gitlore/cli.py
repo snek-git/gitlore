@@ -55,7 +55,7 @@ def build(
     coverage = metadata.source_coverage
     console.print(
         "\n[bold green]Built index[/bold green] "
-        f"with {metadata.card_count} advice cards from {metadata.total_commits_analyzed} commits."
+        f"with {metadata.note_count} knowledge notes from {metadata.total_commits_analyzed} commits."
     )
     console.print(
         "[dim]"
@@ -135,7 +135,7 @@ def export(
         Path | None, typer.Option("--config", "-c", help="Path to gitlore.toml")
     ] = None,
 ) -> None:
-    """Render stable guidance cards from the current index into export artifacts."""
+    """Render stable knowledge exports from the current index."""
     config = GitloreConfig.load(config_path)
     config.repo_path = str(repo.resolve())
     if formats:
@@ -190,12 +190,15 @@ def auth() -> None:
         console.print("[yellow]No GitHub token found.[/yellow]")
         console.print("GitHub enrichment is optional. Set GITHUB_TOKEN or use `gh auth login`.")
 
-    if config.models.classifier or config.models.embedding or config.models.compressor:
+    if config.models.classifier or config.models.embedding or config.models.synthesizer:
         if Path(".env").exists():
             console.print("[green].env detected[/green] — build-time LLM analysis may be available.")
         else:
             console.print("[yellow]No local .env detected.[/yellow]")
-            console.print("Build still works with deterministic leads only.")
+            console.print(
+                "Build can still run, but investigation notes require a synthesizer model "
+                "and OPENROUTER_API_KEY."
+            )
 
 
 def _parse_since(value: str) -> int | None:

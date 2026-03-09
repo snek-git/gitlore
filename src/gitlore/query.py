@@ -1,4 +1,4 @@
-"""Retrieve planning briefs from the local advice-card index."""
+"""Retrieve knowledge notes from the local index."""
 
 from __future__ import annotations
 
@@ -8,34 +8,16 @@ from pathlib import Path
 from gitlore.config import GitloreConfig
 from gitlore.index import IndexStore, brief_to_json
 from gitlore.models import (
-    AdviceCard,
+    CONFIDENCE_WEIGHT,
+    KnowledgeNote,
     PlanningBrief,
     PlanningNote,
     PlanningQuery,
-    QueryIntent,
     RelatedFile,
     SourceCoverage,
 )
 
-_BUGFIX_WORDS = {"fix", "bug", "flaky", "error", "fail", "regression"}
-_REFACTOR_WORDS = {"refactor", "cleanup", "simplify", "restructure"}
-_FEATURE_WORDS = {"add", "implement", "introduce", "support"}
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_/.-]+")
-
-
-def infer_intent(task: str, *, diff_path: str | None = None) -> QueryIntent:
-    """Infer the dominant task intent from simple keywords."""
-    lowered = task.lower()
-    tokens = set(_TOKEN_RE.findall(lowered))
-    if diff_path or "review" in tokens:
-        return QueryIntent.REVIEW
-    if tokens & _BUGFIX_WORDS:
-        return QueryIntent.BUGFIX
-    if tokens & _REFACTOR_WORDS:
-        return QueryIntent.REFACTOR
-    if tokens & _FEATURE_WORDS:
-        return QueryIntent.FEATURE
-    return QueryIntent.GENERAL
 
 
 def build_planning_brief(
@@ -51,7 +33,6 @@ def build_planning_brief(
     """Return a task-scoped planning brief using local retrieval only."""
     query = PlanningQuery(
         task=task,
-        intent=infer_intent(task, diff_path=diff_path),
         files=_normalize_files(config.repo_path, files or []),
         diff_text=_read_diff(diff_path),
         diff_path=diff_path,
@@ -65,26 +46,26 @@ def build_planning_brief(
         if not store.has_index():
             raise FileNotFoundError("No gitlore index found. Run `gitlore build` first.")
         metadata = store.get_build_metadata()
-        cards = store.load_cards()
+        notes = store.load_notes()
         related_files = _collect_related_files(store, query.files)
         fts_scores = store.search_fts(_fts_query(query), limit=100)
     finally:
         store.close()
 
-    ranked = _rank_cards(cards, query, related_files, fts_scores)
-    notes = [
+    ranked = _rank_notes(notes, query, related_files, fts_scores)
+    planning_notes = [
         PlanningNote(
-            text=card.text,
-            refs=[item.ref for item in card.evidence[:3]],
-            priority=card.priority,
+            text=note.text,
+            refs=note.evidence_refs[:3],
+            confidence=note.confidence,
         )
-        for card in ranked[: query.max_notes]
+        for note in ranked[: query.max_notes]
     ]
-    summary = f"{len(notes)} planning note{'s' if len(notes) != 1 else ''} for this change"
+    summary = f"{len(planning_notes)} note{'s' if len(planning_notes) != 1 else ''} for this change"
     return PlanningBrief(
         task=task,
         summary=summary,
-        notes=notes,
+        notes=planning_notes,
         related_files=related_files[:5],
         source_coverage=metadata.source_coverage if metadata else SourceCoverage(),
         build_metadata=metadata,
@@ -99,7 +80,7 @@ def render_planning_brief(brief: PlanningBrief, *, format_name: str = "summary")
     lines = [brief.summary]
     for note in brief.notes:
         lines.append("")
-        lines.append(f"- [{note.priority.value}] {note.text}")
+        lines.append(f"- [{note.confidence}] {note.text}")
         if note.refs:
             lines.append(f"  refs: {', '.join(note.refs)}")
     return "\n".join(lines)
@@ -139,49 +120,37 @@ def _collect_related_files(store: IndexStore, files: list[str]) -> list[RelatedF
     return sorted(related.values(), key=lambda item: (-item.score, item.path))
 
 
-def _rank_cards(
-    cards: list[AdviceCard],
+def _rank_notes(
+    notes: list[KnowledgeNote],
     query: PlanningQuery,
-    related_files,
+    related_files: list[RelatedFile],
     fts_scores: dict[str, float],
-) -> list[AdviceCard]:
+) -> list[KnowledgeNote]:
     tokens = _query_tokens(query)
     token_set = set(tokens)
     related_scores = {item.path: item.score for item in related_files}
-    support_max = max((card.support_count for card in cards), default=1)
 
-    scored: list[tuple[float, AdviceCard]] = []
-    for card in cards:
-        anchor_match = _anchor_match(query.files, card.anchors)
-        intent_match = 1.0 if query.intent in card.applies_to or QueryIntent.GENERAL in card.applies_to else 0.0
-        graph_match = _graph_match(card.anchors, related_scores)
-        lexical = _lexical_match(card, token_set)
-        fts = fts_scores.get(card.id, 0.0)
-        support = card.support_count / max(support_max, 1)
+    scored: list[tuple[float, KnowledgeNote]] = []
+    for note in notes:
+        anchor_match = _anchor_match(query.files, note.anchors)
+        graph_match = _graph_match(note.anchors, related_scores)
+        lexical = _lexical_match(note, token_set)
+        fts = fts_scores.get(note.id, 0.0)
+        confidence = CONFIDENCE_WEIGHT.get(note.confidence, 0.6)
 
         score = (
-            0.35 * anchor_match
-            + 0.20 * intent_match
-            + 0.20 * max(lexical, fts)
-            + 0.10 * graph_match
-            + 0.10 * card.confidence
-            + 0.03 * support
-            + 0.02 * card.priority.retrieval_weight
+            0.40 * anchor_match
+            + 0.25 * max(lexical, fts)
+            + 0.15 * graph_match
+            + 0.10 * confidence
+            + 0.10 * (1.0 if anchor_match or lexical or fts else 0.0)
         )
         if score <= 0.05 and not anchor_match and not lexical and not fts:
             continue
-        scored.append((score, card))
+        scored.append((score, note))
 
-    scored.sort(
-        key=lambda item: (
-            -item[0],
-            item[1].priority.sort_rank,
-            -item[1].confidence,
-            -item[1].support_count,
-            item[1].text,
-        )
-    )
-    return [card for _, card in scored]
+    scored.sort(key=lambda item: (-item[0], item[1].confidence, item[1].text))
+    return [note for _, note in scored]
 
 
 def _query_tokens(query: PlanningQuery) -> list[str]:
@@ -200,6 +169,11 @@ def _anchor_match(query_files: list[str], anchors: list[str]) -> float:
     anchor_names = {Path(item).name for item in anchors}
     if query_names & anchor_names:
         return 0.5
+    # directory prefix match
+    for qf in query_files:
+        for anchor in anchors:
+            if qf.startswith(anchor.rstrip("/") + "/") or anchor.startswith(qf.rstrip("/") + "/"):
+                return 0.3
     return 0.0
 
 
@@ -209,13 +183,13 @@ def _graph_match(anchors: list[str], related_scores: dict[str, float]) -> float:
     return max((related_scores.get(anchor, 0.0) for anchor in anchors), default=0.0)
 
 
-def _lexical_match(card: AdviceCard, token_set: set[str]) -> float:
+def _lexical_match(note: KnowledgeNote, token_set: set[str]) -> float:
     if not token_set:
         return 0.0
-    card_tokens = set(_TOKEN_RE.findall(card.search_text.lower()))
-    if not card_tokens:
+    note_tokens = set(_TOKEN_RE.findall(note.search_text.lower()))
+    if not note_tokens:
         return 0.0
-    overlap = len(token_set & card_tokens)
+    overlap = len(token_set & note_tokens)
     if overlap == 0:
         return 0.0
     return overlap / len(token_set)

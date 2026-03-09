@@ -65,7 +65,6 @@ Main sections:
 - `[models]`
   - `classifier`
   - `embedding`
-  - `compressor`
   - `synthesizer`
 - `[build]`
   - `since_months`

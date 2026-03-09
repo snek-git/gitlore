@@ -244,45 +244,6 @@ class CommentCluster:
     coherence: float = 0.0
 
 
-# ── Synthesis output ────────────────────────────────────────────────────────
-
-
-class FindingCategory(Enum):
-    CODE_PATTERN = "code_pattern"
-    CONVENTION = "convention"
-    ARCHITECTURE = "architecture"
-    LANDMINE = "landmine"
-    TOOLING = "tooling"
-    FRAGILE_AREA = "fragile_area"
-    CONTRIBUTOR = "contributor"
-
-
-class FindingSeverity(Enum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-
-
-@dataclass
-class EvidencePoint:
-    """A single piece of evidence supporting a finding."""
-
-    source: str  # reviews, coupling, reverts, hotspots, fix_after, code, conventions
-    text: str
-
-
-@dataclass
-class Finding:
-    """A synthesized insight about the codebase."""
-
-    title: str
-    category: FindingCategory
-    severity: FindingSeverity
-    insight: str
-    evidence: list[EvidencePoint] = field(default_factory=list)
-    files: list[str] = field(default_factory=list)
-
-
 # ── Pipeline aggregates ─────────────────────────────────────────────────────
 
 
@@ -303,149 +264,32 @@ class AnalysisResult:
     analysis_date: datetime | None = None
 
 
-@dataclass
-class SynthesisResult:
-    """Output from the synthesis stage."""
-
-    findings: list[Finding] = field(default_factory=list)
-    raw_xml: str = ""
-    analysis: AnalysisResult | None = None
-    has_review_data: bool = False
-    model_used: str = ""
-    total_tokens: int = 0
-
-    @property
-    def content(self) -> str:
-        """Render findings as markdown for formatters that consume plain text."""
-        if not self.findings:
-            return ""
-        lines: list[str] = []
-        for f in self.findings:
-            lines.append(f"## {f.title}")
-            lines.append("")
-            if f.insight:
-                lines.append(f.insight)
-                lines.append("")
-            if f.files:
-                lines.append("**Files:** " + ", ".join(f"`{p}`" for p in f.files))
-                lines.append("")
-            if f.evidence:
-                for e in f.evidence:
-                    lines.append(f"- *{e.source}:* {e.text}")
-                lines.append("")
-        return "\n".join(lines).strip()
+# ── Knowledge notes ─────────────────────────────────────────────────────────
 
 
-class QueryIntent(Enum):
-    BUGFIX = "bugfix"
-    REFACTOR = "refactor"
-    FEATURE = "feature"
-    REVIEW = "review"
-    GENERAL = "general"
+_VALID_CONFIDENCE = {"high", "medium", "low"}
+
+CONFIDENCE_WEIGHT = {"high": 1.0, "medium": 0.6, "low": 0.3}
 
 
 @dataclass
-class EvidenceRef:
-    """A single piece of provenance for an advice card or lead."""
-
-    source_type: str
-    label: str
-    ref: str
-    excerpt: str
-    weight: float = 1.0
-
-
-class AdvicePriority(Enum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-
-    @property
-    def sort_rank(self) -> int:
-        """Return the stable ordering used for cards and leads."""
-        return {
-            AdvicePriority.HIGH: 0,
-            AdvicePriority.MEDIUM: 1,
-            AdvicePriority.LOW: 2,
-        }[self]
-
-    @property
-    def retrieval_weight(self) -> float:
-        """Return the lightweight score boost used during retrieval."""
-        return {
-            AdvicePriority.HIGH: 1.0,
-            AdvicePriority.MEDIUM: 0.6,
-            AdvicePriority.LOW: 0.3,
-        }[self]
-
-
-class AdviceKind(Enum):
-    SCOPE = "scope"
-    RISK = "risk"
-    VALIDATION = "validation"
-    REVIEW = "review"
-    CONVENTION = "convention"
-    HISTORICAL = "historical"
-
-
-class LeadKind(Enum):
-    HOTSPOT = "hotspot"
-    COUPLING = "coupling"
-    TEST_ASSOCIATION = "test_association"
-    FIX_AFTER = "fix_after"
-    REVERT = "revert"
-    REVIEW = "review"
-    DOC = "doc"
-    CONVENTION = "convention"
-
-    @property
-    def advice_kind(self) -> AdviceKind:
-        """Return the default advice kind for leads of this type."""
-        return {
-            LeadKind.HOTSPOT: AdviceKind.RISK,
-            LeadKind.COUPLING: AdviceKind.SCOPE,
-            LeadKind.TEST_ASSOCIATION: AdviceKind.VALIDATION,
-            LeadKind.FIX_AFTER: AdviceKind.HISTORICAL,
-            LeadKind.REVERT: AdviceKind.HISTORICAL,
-            LeadKind.REVIEW: AdviceKind.REVIEW,
-            LeadKind.DOC: AdviceKind.CONVENTION,
-            LeadKind.CONVENTION: AdviceKind.CONVENTION,
-        }[self]
-
-
-@dataclass
-class InvestigationLead:
-    """A bounded investigation target for build-time agentic analysis."""
-
-    id: str
-    kind: LeadKind
-    title: str
-    summary: str
-    anchors: list[str] = field(default_factory=list)
-    applies_to: list[QueryIntent] = field(default_factory=list)
-    priority: AdvicePriority = AdvicePriority.MEDIUM
-    support_count: int = 0
-    confidence: float = 0.0
-    evidence: list[EvidenceRef] = field(default_factory=list)
-    search_text: str = ""
-    prompt_context: str = ""
-
-
-@dataclass
-class AdviceCard:
-    """A build-time advisory note written for planning-time retrieval."""
+class KnowledgeNote:
+    """A piece of tribal knowledge extracted from repository investigation."""
 
     id: str
     text: str
-    priority: AdvicePriority
-    kind: AdviceKind
-    applies_to: list[QueryIntent] = field(default_factory=list)
     anchors: list[str] = field(default_factory=list)
-    confidence: float = 0.0
-    support_count: int = 0
+    evidence_refs: list[str] = field(default_factory=list)
+    confidence: str = "medium"
+    created_at: datetime | None = None
     search_text: str = ""
-    created_by_build: str = "deterministic"
-    evidence: list[EvidenceRef] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.confidence not in _VALID_CONFIDENCE:
+            self.confidence = "medium"
+
+
+# ── Index / retrieval ───────────────────────────────────────────────────────
 
 
 @dataclass
@@ -466,13 +310,9 @@ class BuildMetadata:
     repo_path: str
     built_at: datetime
     total_commits_analyzed: int = 0
-    card_count: int = 0
+    note_count: int = 0
     source_coverage: SourceCoverage = field(default_factory=SourceCoverage)
-
-    @property
-    def fact_count(self) -> int:
-        """Backward-compatible alias used by older callers."""
-        return self.card_count
+    head_commit: str = ""
 
 
 @dataclass
@@ -495,12 +335,14 @@ class RelatedFile:
     score: float
 
 
+# ── Query / retrieval ───────────────────────────────────────────────────────
+
+
 @dataclass
 class PlanningQuery:
     """The retrieval inputs for a planning-time lookup."""
 
     task: str
-    intent: QueryIntent
     files: list[str] = field(default_factory=list)
     diff_text: str = ""
     diff_path: str | None = None
@@ -515,7 +357,7 @@ class PlanningNote:
 
     text: str
     refs: list[str] = field(default_factory=list)
-    priority: AdvicePriority = AdvicePriority.MEDIUM
+    confidence: str = "medium"
 
 
 @dataclass
@@ -532,7 +374,7 @@ class PlanningBrief:
 
 @dataclass
 class ExportBundle:
-    """Stable advice cards rendered into export formats."""
+    """Knowledge notes rendered into export formats."""
 
-    cards: list[AdviceCard] = field(default_factory=list)
+    notes: list[KnowledgeNote] = field(default_factory=list)
     build_metadata: BuildMetadata | None = None

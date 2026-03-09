@@ -13,15 +13,7 @@ from pathlib import Path
 class ModelConfig:
     classifier: str = "openrouter/google/gemini-3-flash-preview"
     embedding: str = "openrouter/openai/text-embedding-3-small"
-    compressor: str = "openrouter/anthropic/claude-sonnet-4.6"
     synthesizer: str = "openrouter/anthropic/claude-sonnet-4.6"
-
-    def __post_init__(self) -> None:
-        """Keep compressor and synthesizer aligned when only one is configured."""
-        if self.compressor and not self.synthesizer:
-            self.synthesizer = self.compressor
-        elif self.synthesizer and not self.compressor:
-            self.compressor = self.synthesizer
 
 
 @dataclass
@@ -129,14 +121,7 @@ class GitloreConfig:
         config.models = ModelConfig(
             classifier=models.get("classifier", config.models.classifier),
             embedding=models.get("embedding", config.models.embedding),
-            compressor=models.get(
-                "compressor",
-                models.get("synthesizer", config.models.compressor),
-            ),
-            synthesizer=models.get(
-                "synthesizer",
-                models.get("compressor", config.models.synthesizer),
-            ),
+            synthesizer=models.get("synthesizer", config.models.synthesizer),
         )
 
         build = raw.get("build", {})
@@ -194,7 +179,7 @@ DEFAULT_CONFIG_TEMPLATE = """\
 [models]
 classifier = "openrouter/google/gemini-3-flash-preview"
 embedding = "openrouter/openai/text-embedding-3-small"
-compressor = "openrouter/anthropic/claude-sonnet-4.6"
+synthesizer = "openrouter/anthropic/claude-sonnet-4.6"
 
 [build]
 since_months = 12

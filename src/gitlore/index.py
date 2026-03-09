@@ -1,4 +1,4 @@
-"""SQLite-backed advice-card index for gitlore."""
+"""SQLite-backed knowledge index for gitlore."""
 
 from __future__ import annotations
 
@@ -9,36 +9,22 @@ from datetime import datetime
 from pathlib import Path
 
 from gitlore.models import (
-    AdviceCard,
-    AdviceKind,
-    AdvicePriority,
     BuildMetadata,
-    EvidenceRef,
     FileEdge,
+    KnowledgeNote,
     PlanningBrief,
-    QueryIntent,
     RelatedFile,
     SourceCoverage,
 )
 
 
 def index_path(repo_path: str) -> Path:
-    """Return the on-disk location of the planning index."""
+    """Return the on-disk location of the knowledge index."""
     return Path(repo_path) / ".gitlore" / "index.db"
 
 
-def _encode_list(items: list[str]) -> str:
-    return json.dumps(items)
-
-
-def _decode_list(raw: str) -> list[str]:
-    if not raw:
-        return []
-    return list(json.loads(raw))
-
-
 class IndexStore:
-    """Persist and query build-time advice cards for planning retrieval."""
+    """Persist and query build-time knowledge notes for retrieval."""
 
     def __init__(self, repo_path: str) -> None:
         db_path = index_path(repo_path)
@@ -53,11 +39,10 @@ class IndexStore:
     def reset(self) -> None:
         self._conn.executescript(
             """
-            DELETE FROM advice_cards;
-            DELETE FROM card_evidence;
+            DELETE FROM knowledge_notes;
             DELETE FROM file_edges;
             DELETE FROM build_metadata;
-            DELETE FROM card_fts;
+            DELETE FROM note_fts;
             """
         )
         self._conn.commit()
@@ -65,28 +50,14 @@ class IndexStore:
     def _create_tables(self) -> None:
         self._conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS advice_cards (
+            CREATE TABLE IF NOT EXISTS knowledge_notes (
                 id TEXT PRIMARY KEY,
                 text TEXT NOT NULL,
-                priority TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                applies_to TEXT NOT NULL,
                 anchors TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                support_count INTEGER NOT NULL,
+                evidence_refs TEXT NOT NULL,
+                confidence TEXT NOT NULL,
                 search_text TEXT NOT NULL,
-                created_by_build TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS card_evidence (
-                card_id TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                source_type TEXT NOT NULL,
-                label TEXT NOT NULL,
-                ref TEXT NOT NULL,
-                excerpt TEXT NOT NULL,
-                weight REAL NOT NULL,
-                PRIMARY KEY (card_id, position)
+                created_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS file_edges (
@@ -103,8 +74,8 @@ class IndexStore:
                 value TEXT NOT NULL
             );
 
-            CREATE VIRTUAL TABLE IF NOT EXISTS card_fts USING fts5(
-                card_id UNINDEXED,
+            CREATE VIRTUAL TABLE IF NOT EXISTS note_fts USING fts5(
+                note_id UNINDEXED,
                 text,
                 anchors,
                 search_text
@@ -115,77 +86,50 @@ class IndexStore:
 
     def store_build(
         self,
-        cards: list[AdviceCard],
+        notes: list[KnowledgeNote],
         edges: list[FileEdge],
         metadata: BuildMetadata,
     ) -> None:
         """Replace the current index contents with a fresh build."""
         self.reset()
 
-        for card in cards:
+        for note in notes:
             self._conn.execute(
                 """
-                INSERT INTO advice_cards (
-                    id, text, priority, kind, applies_to, anchors,
-                    confidence, support_count, search_text, created_by_build
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO knowledge_notes (
+                    id, text, anchors, evidence_refs, confidence, search_text, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    card.id,
-                    card.text,
-                    card.priority.value,
-                    card.kind.value,
-                    _encode_list([item.value for item in card.applies_to]),
-                    _encode_list(card.anchors),
-                    card.confidence,
-                    card.support_count,
-                    card.search_text,
-                    card.created_by_build,
+                    note.id,
+                    note.text,
+                    json.dumps(note.anchors),
+                    json.dumps(note.evidence_refs),
+                    note.confidence,
+                    note.search_text,
+                    note.created_at.isoformat() if note.created_at else None,
                 ),
             )
             self._conn.execute(
                 """
-                INSERT INTO card_fts (card_id, text, anchors, search_text)
+                INSERT INTO note_fts (note_id, text, anchors, search_text)
                 VALUES (?, ?, ?, ?)
                 """,
                 (
-                    card.id,
-                    card.text,
-                    " ".join(card.anchors),
-                    card.search_text,
+                    note.id,
+                    note.text,
+                    " ".join(note.anchors),
+                    note.search_text,
                 ),
             )
-            for index, evidence in enumerate(card.evidence):
-                self._conn.execute(
-                    """
-                    INSERT INTO card_evidence (
-                        card_id, position, source_type, label, ref, excerpt, weight
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        card.id,
-                        index,
-                        evidence.source_type,
-                        evidence.label,
-                        evidence.ref,
-                        evidence.excerpt,
-                        evidence.weight,
-                    ),
-                )
 
         for edge in edges:
             self._conn.execute(
                 """
-                INSERT INTO file_edges (src, dst, edge_type, score, reason)
+                INSERT OR REPLACE INTO file_edges (src, dst, edge_type, score, reason)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (
-                    edge.src,
-                    edge.dst,
-                    edge.edge_type,
-                    edge.score,
-                    edge.reason,
-                ),
+                (edge.src, edge.dst, edge.edge_type, edge.score, edge.reason),
             )
 
         self._conn.execute(
@@ -197,7 +141,8 @@ class IndexStore:
                         "repo_path": metadata.repo_path,
                         "built_at": metadata.built_at.isoformat(),
                         "total_commits_analyzed": metadata.total_commits_analyzed,
-                        "card_count": metadata.card_count,
+                        "note_count": metadata.note_count,
+                        "head_commit": metadata.head_commit,
                         "source_coverage": asdict(metadata.source_coverage),
                     }
                 ),
@@ -205,11 +150,11 @@ class IndexStore:
         )
         self._conn.commit()
 
-    def load_cards(self) -> list[AdviceCard]:
+    def load_notes(self) -> list[KnowledgeNote]:
         rows = self._conn.execute(
-            "SELECT * FROM advice_cards ORDER BY priority, confidence DESC, id"
+            "SELECT * FROM knowledge_notes ORDER BY confidence, id"
         ).fetchall()
-        return [self._row_to_card(row) for row in rows]
+        return [self._row_to_note(row) for row in rows]
 
     def get_related_files(self, path: str, limit: int = 5) -> list[RelatedFile]:
         rows = self._conn.execute(
@@ -236,9 +181,9 @@ class IndexStore:
             return {}
         rows = self._conn.execute(
             """
-            SELECT card_id, bm25(card_fts) AS rank
-            FROM card_fts
-            WHERE card_fts MATCH ?
+            SELECT note_id, bm25(note_fts) AS rank
+            FROM note_fts
+            WHERE note_fts MATCH ?
             ORDER BY rank
             LIMIT ?
             """,
@@ -247,7 +192,7 @@ class IndexStore:
         scores: dict[str, float] = {}
         for row in rows:
             rank = float(row["rank"])
-            scores[str(row["card_id"])] = 1.0 / (1.0 + max(rank, 0.0))
+            scores[str(row["note_id"])] = 1.0 / (1.0 + max(rank, 0.0))
         return scores
 
     def get_build_metadata(self) -> BuildMetadata | None:
@@ -262,48 +207,35 @@ class IndexStore:
             repo_path=raw["repo_path"],
             built_at=datetime.fromisoformat(raw["built_at"]),
             total_commits_analyzed=raw["total_commits_analyzed"],
-            card_count=raw.get("card_count", raw.get("fact_count", 0)),
+            note_count=raw["note_count"],
+            head_commit=raw.get("head_commit", ""),
             source_coverage=SourceCoverage(**raw["source_coverage"]),
         )
 
     def has_index(self) -> bool:
         row = self._conn.execute(
-            "SELECT COUNT(*) AS count FROM advice_cards"
+            "SELECT 1 FROM build_metadata WHERE key = ?",
+            ("metadata",),
+        ).fetchone()
+        if row is not None:
+            return True
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS count FROM knowledge_notes"
         ).fetchone()
         return row is not None and int(row["count"]) > 0
 
-    def _row_to_card(self, row: sqlite3.Row) -> AdviceCard:
-        evidence_rows = self._conn.execute(
-            """
-            SELECT source_type, label, ref, excerpt, weight
-            FROM card_evidence
-            WHERE card_id = ?
-            ORDER BY position
-            """,
-            (row["id"],),
-        ).fetchall()
-        evidence = [
-            EvidenceRef(
-                source_type=str(e_row["source_type"]),
-                label=str(e_row["label"]),
-                ref=str(e_row["ref"]),
-                excerpt=str(e_row["excerpt"]),
-                weight=float(e_row["weight"]),
-            )
-            for e_row in evidence_rows
-        ]
-        return AdviceCard(
+    def _row_to_note(self, row: sqlite3.Row) -> KnowledgeNote:
+        created_at = None
+        if row["created_at"]:
+            created_at = datetime.fromisoformat(row["created_at"])
+        return KnowledgeNote(
             id=str(row["id"]),
             text=str(row["text"]),
-            priority=AdvicePriority(str(row["priority"])),
-            kind=AdviceKind(str(row["kind"])),
-            applies_to=[QueryIntent(item) for item in _decode_list(str(row["applies_to"]))],
-            anchors=_decode_list(str(row["anchors"])),
-            confidence=float(row["confidence"]),
-            support_count=int(row["support_count"]),
+            anchors=json.loads(row["anchors"]),
+            evidence_refs=json.loads(row["evidence_refs"]),
+            confidence=str(row["confidence"]),
+            created_at=created_at,
             search_text=str(row["search_text"]),
-            created_by_build=str(row["created_by_build"]),
-            evidence=evidence,
         )
 
 
@@ -315,7 +247,7 @@ def brief_to_json(brief: PlanningBrief) -> str:
             {
                 "text": note.text,
                 "refs": note.refs,
-                "priority": note.priority.value,
+                "confidence": note.confidence,
             }
             for note in brief.notes
         ],
@@ -323,17 +255,16 @@ def brief_to_json(brief: PlanningBrief) -> str:
     return json.dumps(payload, indent=2, default=str)
 
 
-def guidance_to_json(cards: list[AdviceCard], metadata: BuildMetadata | None) -> str:
-    """Serialize repo guidance cards for MCP and CLI debugging."""
+def guidance_to_json(notes: list[KnowledgeNote], metadata: BuildMetadata | None) -> str:
+    """Serialize repo guidance notes for MCP and CLI debugging."""
     payload = {
-        "cards": [
+        "notes": [
             {
-                "text": card.text,
-                "priority": card.priority.value,
-                "kind": card.kind.value,
-                "refs": [evidence.ref for evidence in card.evidence[:3]],
+                "text": note.text,
+                "confidence": note.confidence,
+                "refs": note.evidence_refs[:3],
             }
-            for card in cards
+            for note in notes
         ],
         "build_metadata": asdict(metadata) if metadata else None,
     }
